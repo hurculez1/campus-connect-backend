@@ -97,7 +97,7 @@ exports.login = async (req, res, next) => {
 
     const { rows: users } = await pool.query(
       `SELECT id, email, password_hash, first_name, last_name, subscription_tier, 
-              verification_status, is_banned, ban_reason
+              verification_status, is_banned, ban_reason, is_admin, is_super_admin
        FROM users WHERE email = $1 AND is_active = TRUE`,
       [email]
     );
@@ -139,7 +139,9 @@ exports.login = async (req, res, next) => {
         firstName: user.first_name,
         lastName: user.last_name,
         subscriptionTier: user.subscription_tier,
-        verificationStatus: user.verification_status
+        verificationStatus: user.verification_status,
+        isAdmin: user.is_admin || false,
+        isSuperAdmin: user.is_super_admin || false,
       }
     });
   } catch (error) {

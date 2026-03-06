@@ -1,6 +1,5 @@
 const jwt = require('jsonwebtoken');
 const { pool } = require('../config/database');
-const { auth } = require('../config/firebase');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
@@ -25,7 +24,7 @@ const authenticate = async (req, res, next) => {
     const decoded = verifyToken(token);
     
     const { rows: users } = await pool.query(
-      'SELECT id, email, first_name, last_name, subscription_tier, is_banned FROM users WHERE id = $1',
+      'SELECT id, email, first_name, last_name, subscription_tier, is_banned, is_admin, is_super_admin FROM users WHERE id = $1',
       [decoded.userId]
     );
 
@@ -92,10 +91,26 @@ const requireSubscription = (tier) => {
   };
 };
 
+const requireAdmin = (req, res, next) => {
+  if (!req.user?.is_admin && !req.user?.is_super_admin) {
+    return res.status(403).json({ message: 'Admin access required' });
+  }
+  next();
+};
+
+const requireSuperAdmin = (req, res, next) => {
+  if (!req.user?.is_super_admin) {
+    return res.status(403).json({ message: 'Super admin access required' });
+  }
+  next();
+};
+
 module.exports = {
   generateToken,
   verifyToken,
   authenticate,
   socketAuth,
-  requireSubscription
+  requireSubscription,
+  requireAdmin,
+  requireSuperAdmin
 };
