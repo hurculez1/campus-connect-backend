@@ -22,7 +22,12 @@ exports.register = async (req, res, next) => {
       dateOfBirth,
       gender,
       university,
-      studentEmail
+      studentEmail,
+      pronouns = '',
+      bio = '',
+      course = '',
+      yearOfStudy = null,
+      interests = []
     } = req.body;
 
     // Check if email exists
@@ -40,9 +45,15 @@ exports.register = async (req, res, next) => {
 
     // Insert user
     const { rows: newUser } = await pool.query(
-      `INSERT INTO users (email, password_hash, first_name, last_name, date_of_birth, gender, university, student_email)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-      [email, passwordHash, firstName, lastName, dateOfBirth, gender, university, studentEmail || null]
+      `INSERT INTO users (
+        email, password_hash, first_name, last_name, date_of_birth, gender, 
+        university, student_email, pronouns, bio, course, year_of_study, interests
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+      [
+        email, passwordHash, firstName, lastName, dateOfBirth, gender, 
+        university, studentEmail || null, pronouns, bio, course, yearOfStudy || null, 
+        JSON.stringify(interests)
+      ]
     );
 
     const userId = newUser[0].id;
