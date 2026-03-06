@@ -149,11 +149,20 @@ exports.login = async (req, res, next) => {
 
 exports.googleAuth = async (req, res, next) => {
   try {
-    const { firebaseToken } = req.body;
+    const { googleToken, university, dateOfBirth, gender } = req.body;
 
-    // Verify Firebase token
-    const decodedToken = await require('../config/firebase').auth.verifyIdToken(firebaseToken);
-    const { uid, email, name, picture } = decodedToken;
+    // Use access_token to securely fetch profile from Google without needing an ID token
+    const fetch = require('node-fetch');
+    const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${googleToken}` }
+    });
+    
+    if (!response.ok) {
+      return res.status(401).json({ message: 'Invalid Google access token' });
+    }
+
+    const payload = await response.json();
+    const { sub: uid, email, name, picture } = payload;
 
     // Check if user exists
     const { rows: existing } = await pool.query(
@@ -162,18 +171,24 @@ exports.googleAuth = async (req, res, next) => {
     );
 
     let userId;
-    let isNewUser = false;
 
     if (existing.length === 0) {
-      // Create new user
+      if (!university || !dateOfBirth || !gender) {
+        // Stop here and ask frontend for remaining data
+        return res.json({
+          isNewUser: true,
+          requireMoreData: true,
+          pendingData: { uid, email, name: name?.split(' ')[0] || 'User', picture }
+        });
+      }
+
+      // Create new user with completion data
       const { rows: newUser } = await pool.query(
-        `INSERT INTO users (email, firebase_uid, first_name, profile_photo_url, is_active)
-         VALUES ($1, $2, $3, $4, TRUE) RETURNING id`,
-        [email, uid, name?.split(' ')[0] || 'User', picture]
+        `INSERT INTO users (email, firebase_uid, first_name, profile_photo_url, date_of_birth, gender, university, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE) RETURNING id`,
+        [email, uid, name?.split(' ')[0] || 'User', picture, dateOfBirth, gender, university]
       );
       userId = newUser[0].id;
-      isNewUser = true;
-
       await pool.query('INSERT INTO user_settings (user_id) VALUES ($1)', [userId]);
     } else {
       userId = existing[0].id;
@@ -186,12 +201,14 @@ exports.googleAuth = async (req, res, next) => {
 
     res.json({
       token,
-      isNewUser,
+      isNewUser: existing.length === 0,
       user: {
         id: userId,
         email,
         firstName: name?.split(' ')[0] || 'User',
-        profilePhoto: picture
+        profilePhoto: picture,
+        university: existing.length > 0 ? existing[0].university : university,
+        verificationStatus: existing.length > 0 ? existing[0].verification_status : 'not_started'
       }
     });
   } catch (error) {
