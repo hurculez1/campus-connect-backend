@@ -9,7 +9,7 @@ module.exports = (io) => {
 
     // Update online status
     const { pool } = require('../config/database');
-    pool.query('UPDATE users SET last_active = NOW() WHERE id = $1', [socket.userId]);
+    pool.query('UPDATE users SET last_active = NOW() WHERE id = ?', [socket.userId]);
 
     // Handle typing indicator
     socket.on('typing', (data) => {
@@ -39,7 +39,7 @@ module.exports = (io) => {
       
       try {
         await pool.query(
-          'UPDATE messages SET is_read = TRUE, read_at = NOW() WHERE id = $1',
+          'UPDATE messages SET is_read = TRUE, read_at = NOW() WHERE id = ?',
           [messageId]
         );
 

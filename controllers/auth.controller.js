@@ -4,6 +4,7 @@ const { pool } = require('../config/database');
 const { generateToken } = require('../middleware/auth.middleware');
 const { sendVerificationEmail } = require('../services/email.service');
 const logger = require('../utils/logger');
+const { v4: uuidv4 } = require('uuid');
 
 const SALT_ROUNDS = 12;
 
@@ -18,7 +19,7 @@ exports.register = async (req, res, next) => {
       email,
       password,
       firstName,
-      lastName,
+      lastName = '',
       dateOfBirth,
       gender,
       university,
@@ -31,8 +32,8 @@ exports.register = async (req, res, next) => {
     } = req.body;
 
     // Check if email exists
-    const { rows: existing } = await pool.query(
-      'SELECT id FROM users WHERE email = $1',
+    const [existing] = await pool.query(
+      'SELECT id FROM users WHERE email = ?',
       [email]
     );
 
@@ -43,24 +44,24 @@ exports.register = async (req, res, next) => {
     // Hash password
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
+    const userId = uuidv4();
+
     // Insert user
-    const { rows: newUser } = await pool.query(
+    await pool.query(
       `INSERT INTO users (
-        email, password_hash, first_name, last_name, date_of_birth, gender, 
+        id, email, password_hash, first_name, last_name, date_of_birth, gender, 
         university, student_email, pronouns, bio, course, year_of_study, interests
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) `,
       [
-        email, passwordHash, firstName, lastName, dateOfBirth, gender, 
+        userId, email, passwordHash, firstName, lastName, dateOfBirth, gender, 
         university, studentEmail || null, pronouns, bio, course, yearOfStudy || null, 
         JSON.stringify(interests)
       ]
     );
 
-    const userId = newUser[0].id;
-
     // Create user settings
     await pool.query(
-      'INSERT INTO user_settings (user_id) VALUES ($1)',
+      'INSERT INTO user_settings (user_id) VALUES (?)',
       [userId]
     );
 
@@ -69,7 +70,7 @@ exports.register = async (req, res, next) => {
       const verificationToken = require('crypto').randomBytes(32).toString('hex');
       await pool.query(
         `INSERT INTO university_verifications (user_id, university_name, student_email, student_email_token)
-         VALUES ($1, $2, $3, $4)`,
+         VALUES (?, ?, ?, ?)`,
         [userId, university, studentEmail, verificationToken]
       );
       await sendVerificationEmail(studentEmail, verificationToken, firstName);
@@ -106,10 +107,10 @@ exports.login = async (req, res, next) => {
 
     const { email, password } = req.body;
 
-    const { rows: users } = await pool.query(
+    const [users] = await pool.query(
       `SELECT id, email, password_hash, first_name, last_name, subscription_tier, 
               verification_status, is_banned, ban_reason, is_admin, is_super_admin
-       FROM users WHERE email = $1 AND is_active = TRUE`,
+       FROM users WHERE email = ?`,
       [email]
     );
 
@@ -134,7 +135,7 @@ exports.login = async (req, res, next) => {
 
     // Update last active
     await pool.query(
-      'UPDATE users SET last_active = NOW() WHERE id = $1',
+      'UPDATE users SET last_active = NOW() WHERE id = ?',
       [user.id]
     );
 
@@ -149,8 +150,8 @@ exports.login = async (req, res, next) => {
         email: user.email,
         firstName: user.first_name,
         lastName: user.last_name,
-        subscriptionTier: user.subscription_tier,
-        verificationStatus: user.verification_status,
+        subscriptionTier: (user.is_admin || user.is_super_admin) ? 'vip' : (user.subscription_tier || 'free'),
+        verificationStatus: user.verification_status || 'not_started',
         isAdmin: user.is_admin || false,
         isSuperAdmin: user.is_super_admin || false,
       }
@@ -178,8 +179,8 @@ exports.googleAuth = async (req, res, next) => {
     const { sub: uid, email, name, picture } = payload;
 
     // Check if user exists
-    const { rows: existing } = await pool.query(
-      'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
+    const [existing] = await pool.query(
+      'SELECT * FROM users WHERE firebase_uid = ? OR email = ?',
       [uid, email]
     );
 
@@ -195,13 +196,14 @@ exports.googleAuth = async (req, res, next) => {
         });
       }
 
+      const userId = uuidv4();
+
       // Create new user with completion data
-      const { rows: newUser } = await pool.query(
-        `INSERT INTO users (email, firebase_uid, first_name, profile_photo_url, date_of_birth, gender, university, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE) RETURNING id`,
-        [email, uid, name?.split(' ')[0] || 'User', picture, dateOfBirth, gender, university]
+      await pool.query(
+        `INSERT INTO users (id, email, firebase_uid, first_name, profile_photo_url, date_of_birth, gender, university, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE) `,
+        [userId, email, uid, name?.split(' ')[0] || 'User', picture, dateOfBirth, gender, university]
       );
-      userId = newUser[0].id;
     } else {
       userId = existing[0].id;
       if (existing[0].is_banned) {
@@ -232,11 +234,11 @@ exports.verifyEmail = async (req, res, next) => {
   try {
     const { token } = req.params;
 
-    const { rows: verifications } = await pool.query(
+    const [verifications] = await pool.query(
       `SELECT uv.*, u.id as user_id 
        FROM university_verifications uv
        JOIN users u ON uv.user_id = u.id
-       WHERE uv.student_email_token = $1 AND uv.status = 'pending'`,
+       WHERE uv.student_email_token = ? AND uv.status = 'pending'`,
       [token]
     );
 
@@ -250,13 +252,13 @@ exports.verifyEmail = async (req, res, next) => {
     await pool.query(
       `UPDATE university_verifications 
        SET student_email_verified = TRUE, status = 'verified', updated_at = NOW()
-       WHERE id = $1`,
+       WHERE id = ?`,
       [verification.id]
     );
 
     // Update user verification status
     await pool.query(
-      `UPDATE users SET verification_status = 'verified', student_id_verified = TRUE WHERE id = $1`,
+      `UPDATE users SET verification_status = 'verified', student_id_verified = TRUE WHERE id = ?`,
       [verification.user_id]
     );
 

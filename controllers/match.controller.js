@@ -1,6 +1,35 @@
 const { pool } = require('../config/database');
 const logger = require('../utils/logger');
 
+exports.createDirectMatch = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { targetUserId } = req.body;
+    
+    // Sort IDs so user1 is always smaller than user2 to prevent duplicates
+    const user1Id = userId < targetUserId ? userId : targetUserId;
+    const user2Id = userId < targetUserId ? targetUserId : userId;
+
+    const [existing] = await pool.query(
+      'SELECT id FROM matches WHERE user1_id = ? AND user2_id = ?',
+      [user1Id, user2Id]
+    );
+
+    if (existing.length > 0) {
+      return res.json({ matchId: existing[0].id });
+    }
+
+    const [result] = await pool.query(
+      'INSERT INTO matches (user1_id, user2_id) VALUES (?, ?)',
+      [user1Id, user2Id]
+    );
+
+    res.json({ matchId: result.insertId });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.swipe = async (req, res, next) => {
   try {
     const userId = req.user.id;
@@ -12,8 +41,8 @@ exports.swipe = async (req, res, next) => {
 
     // Check if super_like is available
     if (direction === 'super_like') {
-      const { rows: userCheck } = await pool.query(
-        'SELECT subscription_tier, super_likes_available FROM users WHERE id = $1',
+      const [userCheck] = await pool.query(
+        'SELECT subscription_tier, super_likes_available FROM users WHERE id = ?',
         [userId]
       );
 
@@ -32,14 +61,14 @@ exports.swipe = async (req, res, next) => {
 
       // Deduct super like
       await pool.query(
-        'UPDATE users SET super_likes_available = super_likes_available - 1 WHERE id = $1',
+        'UPDATE users SET super_likes_available = super_likes_available - 1 WHERE id = ?',
         [userId]
       );
     }
 
     // Check if free tier user has swipes remaining
-    const { rows: swipeCheck } = await pool.query(
-      'SELECT daily_swipes_used, subscription_tier FROM users WHERE id = $1',
+    const [swipeCheck] = await pool.query(
+      'SELECT daily_swipes_used, subscription_tier FROM users WHERE id = ?',
       [userId]
     );
 
@@ -53,7 +82,7 @@ exports.swipe = async (req, res, next) => {
     // Increment swipe count for free tier
     if (swipeCheck[0].subscription_tier === 'free') {
       await pool.query(
-        'UPDATE users SET daily_swipes_used = daily_swipes_used + 1 WHERE id = $1',
+        'UPDATE users SET daily_swipes_used = daily_swipes_used + 1 WHERE id = ?',
         [userId]
       );
     }
@@ -61,8 +90,8 @@ exports.swipe = async (req, res, next) => {
     // Check for reverse swipe (match)
     let isMatch = false;
     if (direction === 'like' || direction === 'super_like') {
-      const { rows: reverseSwipes } = await pool.query(
-        "SELECT id FROM swipes WHERE swiper_id = $1 AND swiped_id = $2 AND direction IN ('like', 'super_like')",
+      const [reverseSwipes] = await pool.query(
+        "SELECT id FROM swipes WHERE swiper_id = ? AND swiped_id = ? AND direction IN ('like', 'super_like')",
         [targetUserId, userId]
       );
 
@@ -70,34 +99,34 @@ exports.swipe = async (req, res, next) => {
     }
 
     // Insert swipe
-    const { rows: swipeResult } = await pool.query(
-      'INSERT INTO swipes (swiper_id, swiped_id, direction, is_match) VALUES ($1, $2, $3, $4) RETURNING id',
+    const [swipeResult] = await pool.query(
+      'INSERT INTO swipes (swiper_id, swiped_id, direction, is_match) VALUES (?, ?, ?, ?) ',
       [userId, targetUserId, direction, isMatch]
     );
 
-    const swipeId = swipeResult[0].id;
+    const swipeId = swipeResult.insertId;
 
     // If match, create match record
     if (isMatch) {
-      const { rows: reverseSwipe } = await pool.query(
-        'SELECT id FROM swipes WHERE swiper_id = $1 AND swiped_id = $2',
+      const [reverseSwipe] = await pool.query(
+        'SELECT id FROM swipes WHERE swiper_id = ? AND swiped_id = ?',
         [targetUserId, userId]
       );
 
       const user1Id = userId < targetUserId ? userId : targetUserId;
       const user2Id = userId < targetUserId ? targetUserId : userId;
-      const swipe1Id = userId < targetUserId ? swipeId : reverseSwipe[0].id;
-      const swipe2Id = userId < targetUserId ? reverseSwipe[0].id : swipeId;
+      const swipe1Id = userId < targetUserId ? swipeId : reverseSwipe.insertId;
+      const swipe2Id = userId < targetUserId ? reverseSwipe.insertId : swipeId;
 
       await pool.query(
-        'INSERT INTO matches (user1_id, user2_id, swipe1_id, swipe2_id) VALUES ($1, $2, $3, $4)',
+        'INSERT INTO matches (user1_id, user2_id, swipe1_id, swipe2_id) VALUES (?, ?, ?, ?)',
         [user1Id, user2Id, swipe1Id, swipe2Id]
       );
 
       // Create notifications
       await pool.query(
         `INSERT INTO notifications (user_id, type, title, body, data)
-         VALUES ($1, 'match', 'New Match!', 'You have a new match!', $2)`,
+         VALUES (?, 'match', 'New Match!', 'You have a new match!', ?)`,
         [targetUserId, JSON.stringify({ matchUserId: userId })]
       );
 
@@ -127,23 +156,23 @@ exports.getMatches = async (req, res, next) => {
     const { page = 1, limit = 20 } = req.query;
     const offset = (page - 1) * limit;
 
-    const { rows: matches } = await pool.query(
+    const [matches] = await pool.query(
       `SELECT 
         m.id as match_id,
         CASE 
-          WHEN m.user1_id = $1 THEN m.user2_id 
+          WHEN m.user1_id = ? THEN m.user2_id 
           ELSE m.user1_id 
         END as other_user_id,
         u.first_name, u.last_name, u.profile_photo_url, u.last_active,
         (SELECT content FROM messages WHERE match_id = m.id ORDER BY created_at DESC LIMIT 1) as last_message,
         (SELECT created_at FROM messages WHERE match_id = m.id ORDER BY created_at DESC LIMIT 1) as last_message_at,
-        (SELECT COUNT(*) FROM messages WHERE match_id = m.id AND sender_id != $2 AND is_read = FALSE) as unread_count,
+        (SELECT COUNT(*) FROM messages WHERE match_id = m.id AND sender_id != ? AND is_read = FALSE) as unread_count,
         m.created_at as matched_at
        FROM matches m
-       JOIN users u ON u.id = CASE WHEN m.user1_id = $3 THEN m.user2_id ELSE m.user1_id END
-       WHERE (m.user1_id = $4 OR m.user2_id = $5) AND m.is_active = TRUE
+       JOIN users u ON u.id = CASE WHEN m.user1_id = ? THEN m.user2_id ELSE m.user1_id END
+       WHERE (m.user1_id = ? OR m.user2_id = ?) AND m.is_active = TRUE
        ORDER BY last_message_at DESC, m.created_at DESC
-       LIMIT $6 OFFSET $7`,
+       LIMIT ? OFFSET ?`,
       [userId, userId, userId, userId, userId, parseInt(limit), parseInt(offset)]
     );
 
@@ -158,8 +187,8 @@ exports.unmatch = async (req, res, next) => {
     const userId = req.user.id;
     const { matchId } = req.params;
 
-    const { rows: matches } = await pool.query(
-      'SELECT * FROM matches WHERE id = $1 AND (user1_id = $2 OR user2_id = $3)',
+    const [matches] = await pool.query(
+      'SELECT * FROM matches WHERE id = ? AND (user1_id = ? OR user2_id = ?)',
       [matchId, userId, userId]
     );
 
@@ -168,14 +197,14 @@ exports.unmatch = async (req, res, next) => {
     }
 
     await pool.query(
-      'UPDATE matches SET is_active = FALSE, unmatched_at = NOW(), unmatched_by = $1 WHERE id = $2',
+      'UPDATE matches SET is_active = FALSE, unmatched_at = NOW(), unmatched_by = ? WHERE id = ?',
       [userId, matchId]
     );
 
     // Block the user
     const otherUserId = matches[0].user1_id === userId ? matches[0].user2_id : matches[0].user1_id;
     await pool.query(
-      'INSERT INTO blocks (blocker_id, blocked_id, reason) VALUES ($1, $2, $3)',
+      'INSERT INTO blocks (blocker_id, blocked_id, reason) VALUES (?, ?, ?)',
       [userId, otherUserId, 'Unmatched']
     );
 
@@ -191,11 +220,11 @@ exports.getWhoLikedMe = async (req, res, next) => {
 
     // Premium/VIP feature
     if (req.user.subscription_tier === 'free') {
-      const { rows: count } = await pool.query(
+      const [count] = await pool.query(
         `SELECT COUNT(*) as count FROM swipes 
-         WHERE swiped_id = $1 AND direction = 'like' 
+         WHERE swiped_id = ? AND direction = 'like' 
          AND swiper_id NOT IN (
-           SELECT swiped_id FROM swipes WHERE swiper_id = $2
+           SELECT swiped_id FROM swipes WHERE swiper_id = ?
          )`,
         [userId, userId]
       );
@@ -207,14 +236,14 @@ exports.getWhoLikedMe = async (req, res, next) => {
       });
     }
 
-    const { rows: likers } = await pool.query(
+    const [likers] = await pool.query(
       `SELECT u.id, u.first_name, u.profile_photo_url, u.university,
               s.created_at as liked_at
        FROM swipes s
        JOIN users u ON s.swiper_id = u.id
-       WHERE s.swiped_id = $1 AND s.direction = 'like'
+       WHERE s.swiped_id = ? AND s.direction = 'like'
        AND s.swiper_id NOT IN (
-         SELECT swiped_id FROM swipes WHERE swiper_id = $2
+         SELECT swiped_id FROM swipes WHERE swiper_id = ?
        )`,
       [userId, userId]
     );

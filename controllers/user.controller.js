@@ -5,14 +5,16 @@ exports.getProfile = async (req, res, next) => {
   try {
     const userId = req.user.id;
 
-    const { rows: users } = await pool.query(
+    const [users] = await pool.query(
       `SELECT id, email, first_name, last_name, date_of_birth, gender, pronouns,
               bio, university, course, year_of_study, profile_photo_url, photos,
               interests, location_lat, location_lng, city, subscription_tier,
               verification_status, preferred_age_min, preferred_age_max, preferred_gender,
-              preferred_distance_km, language_preference, created_at
+              preferred_distance_km, language_preference, created_at,
+              (SELECT COUNT(*) FROM matches WHERE user1_id=id OR user2_id=id) as match_count,
+              (SELECT COUNT(*) FROM messages WHERE sender_id=id) as message_count
        FROM users
-       WHERE id = $1`,
+       WHERE id = ?`,
       [userId]
     );
 
@@ -44,7 +46,7 @@ exports.updateProfile = async (req, res, next) => {
     for (const [key, value] of Object.entries(updates)) {
       if (allowedFields.includes(key)) {
         values.push(typeof value === 'object' ? JSON.stringify(value) : value);
-        fields.push(`${key} = $${values.length}`);
+        fields.push(`${key} = ?`);
       }
     }
 
@@ -55,7 +57,7 @@ exports.updateProfile = async (req, res, next) => {
     values.push(userId);
 
     await pool.query(
-      `UPDATE users SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $${values.length}`,
+      `UPDATE users SET ${fields.join(', ')}, updated_at = NOW() WHERE id = ?`,
       values
     );
 
@@ -74,18 +76,10 @@ exports.uploadPhoto = async (req, res, next) => {
       return res.status(400).json({ message: 'No file uploaded' });
     }
 
-    // Upload to Cloudinary
-    const cloudinary = require('../config/cloudinary');
-    const result = await cloudinary.uploader.upload(file.path, {
-      folder: 'campus-connect/photos',
-      transformation: [{ width: 800, height: 800, crop: 'limit' }]
-    });
+    const apiUrl = process.env.API_URL || 'https://server.quickerc.com/campus-connect';
+    const photoUrl = `${apiUrl}/uploads/${file.filename}`;
 
-    // Get current photos
-    const { rows: users } = await pool.query(
-      'SELECT photos FROM users WHERE id = $1',
-      [userId]
-    );
+    const [users] = await pool.query('SELECT photos FROM users WHERE id = ?', [userId]);
 
     let photos = users[0].photos ? (typeof users[0].photos === 'string' ? JSON.parse(users[0].photos) : users[0].photos) : [];
 
@@ -94,33 +88,29 @@ exports.uploadPhoto = async (req, res, next) => {
     }
 
     photos.push({
-      url: result.secure_url,
-      public_id: result.public_id,
+      url: photoUrl,
+      public_id: file.filename,
       is_primary: photos.length === 0
     });
 
-    // Update profile photo if first photo
-    const updateFields = ['photos = $1'];
+    const updateFields = ['photos = ?'];
     const updateValues = [JSON.stringify(photos)];
 
     if (photos.length === 1) {
-      updateFields.push(`profile_photo_url = $${updateValues.length + 1}`);
-      updateValues.push(result.secure_url);
+      updateFields.push('profile_photo_url = ?');
+      updateValues.push(photoUrl);
     }
 
     updateValues.push(userId);
 
     await pool.query(
-      `UPDATE users SET ${updateFields.join(', ')} WHERE id = $${updateValues.length}`,
+      `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
       updateValues
     );
 
     res.json({
       message: 'Photo uploaded successfully',
-      photo: {
-        url: result.secure_url,
-        public_id: result.public_id
-      }
+      photo: { url: photoUrl, public_id: file.filename }
     });
   } catch (error) {
     next(error);
@@ -134,19 +124,19 @@ exports.getPotentialMatches = async (req, res, next) => {
     const offset = (page - 1) * limit;
 
     // Get user preferences
-    const { rows: users } = await pool.query(
+    const [users] = await pool.query(
       `SELECT preferred_age_min, preferred_age_max, preferred_gender, 
               preferred_distance_km, university, location_lat, location_lng
-       FROM users WHERE id = $1`,
+       FROM users WHERE id = ?`,
       [userId]
     );
 
     const user = users[0];
 
     // Check swipe limits for free tier
-    const { rows: swipeCheck } = await pool.query(
+    const [swipeCheck] = await pool.query(
       `SELECT daily_swipes_used, daily_swipes_reset_at, subscription_tier
-       FROM users WHERE id = $1`,
+       FROM users WHERE id = ?`,
       [userId]
     );
 
@@ -158,38 +148,39 @@ exports.getPotentialMatches = async (req, res, next) => {
     const now = new Date();
     if (lastReset.getDate() !== now.getDate() || lastReset.getMonth() !== now.getMonth()) {
       await pool.query(
-        'UPDATE users SET daily_swipes_used = 0, daily_swipes_reset_at = NOW() WHERE id = $1',
+        'UPDATE users SET daily_swipes_used = 0, daily_swipes_reset_at = NOW() WHERE id = ?',
         [userId]
       );
     }
 
     // Get users already swiped
-    const { rows: swipedUsers } = await pool.query(
-      'SELECT swiped_id FROM swipes WHERE swiper_id = $1',
+    const [swipedUsers] = await pool.query(
+      'SELECT swiped_id FROM swipes WHERE swiper_id = ?',
       [userId]
     );
     const swipedIds = swipedUsers.map(s => s.swiped_id);
     swipedIds.push(userId); // Exclude self
 
-    // Build query with positional params
-    const params = [user.location_lat, user.location_lng, user.location_lat];
+    let params = [];
+    let distanceSelect = '0 AS distance';
 
-    let excludeClause;
+    if (user.location_lat != null && user.location_lng != null) {
+      params.push(user.location_lat, user.location_lng, user.location_lat);
+      distanceSelect = `(6371 * acos(cos(radians(?)) * cos(radians(u.location_lat)) * cos(radians(u.location_lng) - radians(?)) + sin(radians(?)) * sin(radians(u.location_lat)))) AS distance`;
+    }
+
+    let excludeClause = 'TRUE';
     if (swipedIds.length > 0) {
-      swipedIds.forEach(id => params.push(id));
-      const placeholders = swipedIds.map((_, i) => `$${3 + i + 1}`).join(',');
+      const placeholders = swipedIds.map(() => '?').join(',');
       excludeClause = `u.id NOT IN (${placeholders})`;
-    } else {
-      excludeClause = 'TRUE';
+      params.push(...swipedIds);
     }
 
     let query = `
       SELECT u.id, u.first_name, u.last_name, u.date_of_birth, u.gender,
              u.bio, u.university, u.course, u.year_of_study, u.profile_photo_url,
              u.photos, u.interests, u.verification_status,
-             (6371 * acos(cos(radians($1)) * cos(radians(u.location_lat)) * 
-              cos(radians(u.location_lng) - radians($2)) + sin(radians($1)) * sin(radians(u.location_lat))))
-             AS distance
+             ${distanceSelect}
       FROM users u
       WHERE ${excludeClause}
         AND u.is_active = TRUE
@@ -201,31 +192,34 @@ exports.getPotentialMatches = async (req, res, next) => {
     if (user.preferred_gender) {
       const genders = typeof user.preferred_gender === 'string' ? JSON.parse(user.preferred_gender || '[]') : (user.preferred_gender || []);
       if (genders.length > 0) {
-        genders.forEach(g => params.push(g));
-        const gPlaceholders = genders.map((_, i) => `$${params.length - genders.length + i + 1}`).join(',');
+        const gPlaceholders = genders.map(() => '?').join(',');
         query += ` AND u.gender IN (${gPlaceholders})`;
+        params.push(...genders);
       }
     }
 
     if (user.preferred_age_min) {
+      query += ` AND TIMESTAMPDIFF(YEAR, u.date_of_birth, CURDATE()) >= ?`;
       params.push(user.preferred_age_min);
-      query += ` AND DATE_PART('year', AGE(CURRENT_DATE, u.date_of_birth)) >= $${params.length}`;
     }
 
     if (user.preferred_age_max) {
+      query += ` AND TIMESTAMPDIFF(YEAR, u.date_of_birth, CURDATE()) <= ?`;
       params.push(user.preferred_age_max);
-      query += ` AND DATE_PART('year', AGE(CURRENT_DATE, u.date_of_birth)) <= $${params.length}`;
     }
 
-    if (user.preferred_distance_km) {
+    let havingClause = '';
+    if (user.preferred_distance_km && user.location_lat != null) {
+      havingClause = ` HAVING distance <= ?`;
       params.push(user.preferred_distance_km);
-      query += ` HAVING distance <= $${params.length}`;
     }
 
+    query += havingClause;
+    
+    query += ` ORDER BY u.last_active DESC LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), parseInt(offset));
-    query += ` ORDER BY u.last_active DESC LIMIT $${params.length - 1} OFFSET $${params.length}`;
 
-    const { rows: potentialMatches } = await pool.query(query, params);
+    const [potentialMatches] = await pool.query(query, params);
 
     // Compatibility Scoring
     const userInterests = user.interests ? (typeof user.interests === 'string' ? JSON.parse(user.interests) : user.interests) : [];
@@ -240,7 +234,7 @@ exports.getPotentialMatches = async (req, res, next) => {
       }
 
       if (m.university === user.university) score += 10;
-      score += Math.random() * 10;
+      // Removed fake extra randomness
 
       return {
         ...m,
@@ -278,7 +272,7 @@ exports.updateSettings = async (req, res, next) => {
     for (const [key, value] of Object.entries(updates)) {
       if (allowedFields.includes(key)) {
         values.push(value);
-        fields.push(`${key} = $${values.length}`);
+        fields.push(`${key} = ?`);
       }
     }
 
@@ -289,7 +283,7 @@ exports.updateSettings = async (req, res, next) => {
     values.push(userId);
 
     await pool.query(
-      `UPDATE users SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $${values.length}`,
+      `UPDATE users SET ${fields.join(', ')}, updated_at = NOW() WHERE id = ?`,
       values
     );
 

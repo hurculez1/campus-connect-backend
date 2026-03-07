@@ -88,7 +88,7 @@ exports.createSubscription = async (req, res, next) => {
       // Create pending subscription record
       await pool.query(
         `INSERT INTO subscriptions (user_id, tier, status, payment_provider, started_at, expires_at)
-         VALUES ($1, $2, 'pending', 'stripe', NOW(), NOW() + INTERVAL '1 month')`,
+         VALUES (?, ?, 'pending', 'stripe', NOW(), DATE_ADD(NOW(), INTERVAL 1 MONTH))`,
         [userId, plan]
       );
 
@@ -99,7 +99,7 @@ exports.createSubscription = async (req, res, next) => {
       
       await pool.query(
         `INSERT INTO payments (user_id, payment_type, amount, currency, provider, provider_transaction_id, status)
-         VALUES ($1, 'subscription', $2, 'UGX', $3, $4, 'pending')`,
+         VALUES (?, 'subscription', ?, 'UGX', ?, ?, 'pending')`,
         [userId, SUBSCRIPTION_PLANS[plan].monthly.amount, provider, transactionId]
       );
 
@@ -135,14 +135,14 @@ exports.webhook = async (req, res, next) => {
       // Update subscription
       await pool.query(
         `UPDATE subscriptions 
-         SET status = 'active', payment_id = $1, started_at = NOW(), expires_at = NOW() + INTERVAL '1 month'
-         WHERE user_id = $2 AND tier = $3`,
+         SET status = 'active', payment_id = ?, started_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 1 MONTH)
+         WHERE user_id = ? AND tier = ?`,
         [session.subscription, userId, plan]
       );
 
       // Update user tier
       await pool.query(
-        `UPDATE users SET subscription_tier = $1, subscription_expires_at = NOW() + INTERVAL '1 month' WHERE id = $2`,
+        `UPDATE users SET subscription_tier = ?, subscription_expires_at = DATE_ADD(NOW(), INTERVAL 1 MONTH) WHERE id = ?`,
         [plan, userId]
       );
 
@@ -162,9 +162,9 @@ exports.purchaseBoost = async (req, res, next) => {
 
     const boostPrice = quantity * 5000; // UGX 5,000 per boost
 
-    const { rows: result } = await pool.query(
+    const [result] = await pool.query(
       `INSERT INTO payments (user_id, payment_type, amount, currency, provider, status)
-       VALUES ($1, 'boost', $2, 'UGX', 'stripe', 'pending') RETURNING id`,
+       VALUES (?, 'boost', ?, 'UGX', 'stripe', 'pending') `,
       [userId, boostPrice]
     );
 
@@ -172,7 +172,7 @@ exports.purchaseBoost = async (req, res, next) => {
       message: 'Boost purchase initiated',
       amount: boostPrice,
       quantity,
-      paymentId: result[0].id
+      paymentId: result.insertId
     });
   } catch (error) {
     next(error);
@@ -183,15 +183,15 @@ exports.getCurrentSubscription = async (req, res, next) => {
   try {
     const userId = req.user.id;
 
-    const { rows: subscriptions } = await pool.query(
+    const [subscriptions] = await pool.query(
       `SELECT * FROM subscriptions 
-       WHERE user_id = $1 AND status = 'active' AND expires_at > NOW()
+       WHERE user_id = ? AND status = 'active' AND expires_at > NOW()
        ORDER BY expires_at DESC LIMIT 1`,
       [userId]
     );
 
-    const { rows: user } = await pool.query(
-      'SELECT subscription_tier, subscription_expires_at, daily_swipes_used, super_likes_available FROM users WHERE id = $1',
+    const [user] = await pool.query(
+      'SELECT subscription_tier, subscription_expires_at, daily_swipes_used, super_likes_available FROM users WHERE id = ?',
       [userId]
     );
 

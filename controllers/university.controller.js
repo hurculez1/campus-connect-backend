@@ -2,7 +2,7 @@ const { pool } = require('../config/database');
 
 exports.getUniversities = async (req, res, next) => {
   try {
-    const { rows: universities } = await pool.query(
+    const [universities] = await pool.query(
       'SELECT * FROM universities WHERE is_active = TRUE ORDER BY name'
     );
 
@@ -18,15 +18,15 @@ exports.verifyStudentEmail = async (req, res, next) => {
     const { studentEmail } = req.body;
 
     // Validate email domain
-    const { rows: users } = await pool.query(
-      'SELECT university FROM users WHERE id = $1',
+    const [users] = await pool.query(
+      'SELECT university FROM users WHERE id = ?',
       [userId]
     );
 
     const user = users[0];
 
-    const { rows: universities } = await pool.query(
-      'SELECT student_email_domain FROM universities WHERE name = $1',
+    const [universities] = await pool.query(
+      'SELECT student_email_domain FROM universities WHERE name = ?',
       [user.university]
     );
 
@@ -48,9 +48,9 @@ exports.verifyStudentEmail = async (req, res, next) => {
 
     await pool.query(
       `INSERT INTO university_verifications (user_id, university_name, student_email, student_email_token, verification_method)
-       VALUES ($1, $2, $3, $4, 'email')
+       VALUES (?, ?, ?, ?, 'email')
        ON CONFLICT (user_id) DO UPDATE 
-       SET student_email = $3, student_email_token = $4, status = 'pending', student_email_verified = FALSE`,
+       SET student_email = ?, student_email_token = ?, status = 'pending', student_email_verified = FALSE`,
       [userId, user.university, studentEmail, token]
     );
 
@@ -83,8 +83,8 @@ exports.uploadStudentId = async (req, res, next) => {
     // AI verification simulation
     const aiScore = Math.random() * 0.3 + 0.7; // Simulated score 0.7-1.0
 
-    const { rows: users } = await pool.query(
-      'SELECT university FROM users WHERE id = $1',
+    const [users] = await pool.query(
+      'SELECT university FROM users WHERE id = ?',
       [userId]
     );
 
@@ -93,16 +93,16 @@ exports.uploadStudentId = async (req, res, next) => {
     await pool.query(
       `INSERT INTO university_verifications 
        (user_id, university_name, student_id_image_url, ai_verification_score, verification_method, status)
-       VALUES ($1, $2, $3, $4, 'student_id', $5)
+       VALUES (?, ?, ?, ?, 'student_id', ?)
        ON CONFLICT (user_id) DO UPDATE
-       SET student_id_image_url = $3, ai_verification_score = $4, status = $5`,
+       SET student_id_image_url = ?, ai_verification_score = ?, status = ?`,
       [userId, users[0].university, result.secure_url, aiScore, verificationStatus]
     );
 
     // Auto-verify if high AI score
     if (aiScore > 0.8) {
       await pool.query(
-        "UPDATE users SET verification_status = 'verified', student_id_verified = TRUE WHERE id = $1",
+        "UPDATE users SET verification_status = 'verified', student_id_verified = TRUE WHERE id = ?",
         [userId]
       );
     }

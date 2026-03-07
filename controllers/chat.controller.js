@@ -21,8 +21,8 @@ exports.getMessages = async (req, res, next) => {
     const offset = (page - 1) * limit;
 
     // Verify user is part of this match
-    const { rows: matchCheck } = await pool.query(
-      'SELECT * FROM matches WHERE id = $1 AND (user1_id = $2 OR user2_id = $3) AND is_active = TRUE',
+    const [matchCheck] = await pool.query(
+      'SELECT * FROM matches WHERE id = ? AND (user1_id = ? OR user2_id = ?) AND is_active = TRUE',
       [matchId, userId, userId]
     );
 
@@ -30,14 +30,14 @@ exports.getMessages = async (req, res, next) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    const { rows: messages } = await pool.query(
+    const [messages] = await pool.query(
       `SELECT m.id, m.sender_id, m.message_type, m.content, m.media_url,
               m.is_read, m.read_at, m.created_at, u.first_name, u.profile_photo_url
        FROM messages m
        JOIN users u ON m.sender_id = u.id
-       WHERE m.match_id = $1 AND m.is_deleted = FALSE
+       WHERE m.match_id = ? AND m.is_deleted = FALSE
        ORDER BY m.created_at DESC
-       LIMIT $2 OFFSET $3`,
+       LIMIT ? OFFSET ?`,
       [matchId, parseInt(limit), parseInt(offset)]
     );
 
@@ -50,7 +50,7 @@ exports.getMessages = async (req, res, next) => {
     // Mark messages as read
     await pool.query(
       `UPDATE messages SET is_read = TRUE, read_at = NOW() 
-       WHERE match_id = $1 AND sender_id != $2 AND is_read = FALSE`,
+       WHERE match_id = ? AND sender_id != ? AND is_read = FALSE`,
       [matchId, userId]
     );
 
@@ -67,8 +67,8 @@ exports.sendMessage = async (req, res, next) => {
     const { content, messageType = 'text' } = req.body;
 
     // Verify match exists and user is part of it
-    const { rows: matchCheck } = await pool.query(
-      'SELECT * FROM matches WHERE id = $1 AND (user1_id = $2 OR user2_id = $3) AND is_active = TRUE',
+    const [matchCheck] = await pool.query(
+      'SELECT * FROM matches WHERE id = ? AND (user1_id = ? OR user2_id = ?) AND is_active = TRUE',
       [matchId, userId, userId]
     );
 
@@ -78,8 +78,8 @@ exports.sendMessage = async (req, res, next) => {
 
     // Check if blocked
     const otherUserId = matchCheck[0].user1_id === userId ? matchCheck[0].user2_id : matchCheck[0].user1_id;
-    const { rows: blocks } = await pool.query(
-      'SELECT * FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $3 AND blocked_id = $4)',
+    const [blocks] = await pool.query(
+      'SELECT * FROM blocks WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)',
       [userId, otherUserId, otherUserId, userId]
     );
 
@@ -90,18 +90,18 @@ exports.sendMessage = async (req, res, next) => {
     // Encrypt content
     const encryptedContent = encryptMessage(content);
 
-    const { rows: result } = await pool.query(
+    const [result] = await pool.query(
       `INSERT INTO messages (match_id, sender_id, message_type, content, encrypted_payload)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+       VALUES (?, ?, ?, ?, ?) `,
       [matchId, userId, messageType, encryptedContent, encryptedContent]
     );
 
-    const messageId = result[0].id;
+    const messageId = result.insertId;
 
     // Create notification
     await pool.query(
       `INSERT INTO notifications (user_id, type, title, body, data)
-       VALUES ($1, 'message', 'New Message', $2, $3)`,
+       VALUES (?, 'message', 'New Message', ?, ?)`,
       [otherUserId, 'You have a new message', JSON.stringify({ matchId, senderId: userId })]
     );
 
@@ -133,8 +133,8 @@ exports.deleteMessage = async (req, res, next) => {
     const userId = req.user.id;
     const { messageId } = req.params;
 
-    const { rows: messages } = await pool.query(
-      'SELECT * FROM messages WHERE id = $1 AND sender_id = $2',
+    const [messages] = await pool.query(
+      'SELECT * FROM messages WHERE id = ? AND sender_id = ?',
       [messageId, userId]
     );
 
@@ -143,7 +143,7 @@ exports.deleteMessage = async (req, res, next) => {
     }
 
     await pool.query(
-      'UPDATE messages SET is_deleted = TRUE, deleted_at = NOW() WHERE id = $1',
+      'UPDATE messages SET is_deleted = TRUE, deleted_at = NOW() WHERE id = ?',
       [messageId]
     );
 
@@ -158,7 +158,7 @@ exports.getIcebreakers = async (req, res, next) => {
     const { matchId } = req.params;
     const userId = req.user.id;
 
-    const { rows: prompts } = await pool.query(
+    const [prompts] = await pool.query(
       `SELECT * FROM icebreaker_prompts 
        WHERE is_active = TRUE 
        ORDER BY RANDOM() LIMIT 5`

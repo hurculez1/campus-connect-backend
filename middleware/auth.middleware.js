@@ -23,8 +23,8 @@ const authenticate = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     const decoded = verifyToken(token);
     
-    const { rows: users } = await pool.query(
-      'SELECT id, email, first_name, last_name, subscription_tier, is_banned, is_admin, is_super_admin FROM users WHERE id = $1',
+    const [users] = await pool.query(
+      'SELECT id, email, first_name, last_name, subscription_tier, is_banned, is_admin, is_super_admin FROM users WHERE id = ?',
       [decoded.userId]
     );
 
@@ -36,7 +36,11 @@ const authenticate = async (req, res, next) => {
       return res.status(403).json({ message: 'Account has been banned' });
     }
 
-    req.user = users[0];
+    const user = users[0];
+    if (user.is_admin || user.is_super_admin) {
+      user.subscription_tier = 'vip';
+    }
+    req.user = user;
     next();
   } catch (error) {
     if (error.name === 'JsonWebTokenError') {
@@ -58,8 +62,8 @@ const socketAuth = async (socket, next) => {
     }
 
     const decoded = verifyToken(token);
-    const { rows: users } = await pool.query(
-      'SELECT id, email, first_name, is_banned FROM users WHERE id = $1',
+    const [users] = await pool.query(
+      'SELECT id, email, first_name, is_banned FROM users WHERE id = ?',
       [decoded.userId]
     );
 
@@ -67,7 +71,7 @@ const socketAuth = async (socket, next) => {
       return next(new Error('Authentication failed'));
     }
 
-    socket.userId = users[0].id;
+    socket.userId = users.insertId;
     socket.user = users[0];
     next();
   } catch (error) {
