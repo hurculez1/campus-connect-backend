@@ -76,7 +76,7 @@ exports.uploadPhoto = async (req, res, next) => {
       return res.status(400).json({ message: 'No file uploaded' });
     }
 
-    const apiUrl = process.env.API_URL || 'https://server.quickerc.com/campus-connect';
+    const apiUrl = process.env.API_URL || 'https://api.quickercarts.com';
     const photoUrl = `${apiUrl}/uploads/${file.filename}`;
 
     const [users] = await pool.query('SELECT photos FROM users WHERE id = ?', [userId]);
