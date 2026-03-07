@@ -2,6 +2,21 @@ const { pool } = require('../config/database');
 
 exports.getPosts = async (req, res, next) => {
   try {
+    // Ensure table exists safely immediately upon first loading Pulse
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS posts (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+          content TEXT,
+          campus VARCHAR(200),
+          is_anonymous BOOLEAN DEFAULT FALSE,
+          type VARCHAR(20) DEFAULT 'general',
+          likes_count INT DEFAULT 0,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          comments_count INT DEFAULT 0
+      )
+    `);
+
     const { campus, tab } = req.query;
     const params = [];
 

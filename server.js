@@ -1,4 +1,13 @@
 const express = require('express');
+const fs = require('fs');
+
+process.on('uncaughtException', (err) => {
+  fs.appendFileSync('startup-error-log.txt', new Date().toISOString() + ' UNCAUGHT: ' + err.stack + '\n');
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  fs.appendFileSync('startup-error-log.txt', new Date().toISOString() + ' REJECTION: ' + String(reason) + '\n');
+});
 const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
