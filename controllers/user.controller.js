@@ -6,15 +6,13 @@ exports.getProfile = async (req, res, next) => {
     const userId = req.user.id;
 
     const { rows: users } = await pool.query(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.date_of_birth, u.gender, u.pronouns,
-              u.bio, u.university, u.course, u.year_of_study, u.profile_photo_url, u.photos,
-              u.interests, u.location_lat, u.location_lng, u.city, u.subscription_tier,
-              u.verification_status, u.preferred_age_min, u.preferred_age_max, u.preferred_gender,
-              u.preferred_distance_km, u.language_preference, u.created_at,
-              us.email_notifications, us.push_notifications, us.profile_visibility
-       FROM users u
-       LEFT JOIN user_settings us ON u.id = us.user_id
-       WHERE u.id = $1`,
+      `SELECT id, email, first_name, last_name, date_of_birth, gender, pronouns,
+              bio, university, course, year_of_study, profile_photo_url, photos,
+              interests, location_lat, location_lng, city, subscription_tier,
+              verification_status, preferred_age_min, preferred_age_max, preferred_gender,
+              preferred_distance_km, language_preference, created_at
+       FROM users
+       WHERE id = $1`,
       [userId]
     );
 
@@ -291,7 +289,7 @@ exports.updateSettings = async (req, res, next) => {
     values.push(userId);
 
     await pool.query(
-      `UPDATE user_settings SET ${fields.join(', ')}, updated_at = NOW() WHERE user_id = $${values.length}`,
+      `UPDATE users SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $${values.length}`,
       values
     );
 

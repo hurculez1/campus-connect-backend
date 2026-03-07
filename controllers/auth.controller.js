@@ -202,7 +202,6 @@ exports.googleAuth = async (req, res, next) => {
         [email, uid, name?.split(' ')[0] || 'User', picture, dateOfBirth, gender, university]
       );
       userId = newUser[0].id;
-      await pool.query('INSERT INTO user_settings (user_id) VALUES ($1)', [userId]);
     } else {
       userId = existing[0].id;
       if (existing[0].is_banned) {
