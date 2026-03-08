@@ -3,11 +3,11 @@ const fs = require('fs');
 const path = require('path');
 
 process.on('uncaughtException', (err) => {
-  fs.appendFileSync('startup-error-log.txt', new Date().toISOString() + ' UNCAUGHT: ' + err.stack + '\n');
-  process.exit(1);
+  console.error(new Date().toISOString() + ' UNCAUGHT: ' + err.stack + '\n');
+  if (process.env.NODE_ENV !== 'production') process.exit(1);
 });
 process.on('unhandledRejection', (reason, promise) => {
-  fs.appendFileSync('startup-error-log.txt', new Date().toISOString() + ' REJECTION: ' + String(reason) + '\n');
+  console.error(new Date().toISOString() + ' REJECTION: ' + String(reason) + '\n');
 });
 const cors = require('cors');
 const helmet = require('helmet');
