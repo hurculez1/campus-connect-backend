@@ -379,3 +379,144 @@ exports.getMyConnections = async (req, res, next) => {
     next(error);
   }
 };
+
+// ─── Image Message Handling ─────────────────────────────────────────────────
+
+exports.sendImageMessage = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { matchId } = req.params;
+    const cloudinary = require('../config/cloudinary');
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No image uploaded' });
+    }
+
+    // Verify user is part of this match
+    const [matchCheck] = await pool.query(
+      'SELECT * FROM matches WHERE id = ? AND (user1_id = ? OR user2_id = ?) AND is_active = TRUE',
+      [matchId, userId, userId]
+    );
+
+    if (matchCheck.length === 0) {
+      return res.status(403).json({ message: 'Not authorized to send messages to this match' });
+    }
+
+    const otherUserId = matchCheck[0].user1_id === userId ? matchCheck[0].user2_id : matchCheck[0].user1_id;
+
+    // Upload to Cloudinary
+    const b64 = Buffer.from(req.file.buffer).toString('base64');
+    const dataURI = `data:${req.file.mimetype};base64,${b64}`;
+    
+    const result = await cloudinary.uploader.upload(dataURI, {
+      folder: 'campus-connect/messages',
+      transformation: [{ width: 800, height: 800, crop: 'limit' }]
+    });
+
+    const messageId = uuidv4();
+    const encryptedContent = encryptMessage('[Image]');
+    
+    await pool.query(
+      `INSERT INTO messages (id, match_id, sender_id, message_type, content, image_url)
+       VALUES (?, ?, ?, 'image', ?, ?)`,
+      [messageId, matchId, userId, encryptedContent, result.secure_url]
+    );
+
+    // Create notification
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body, data)
+       VALUES (?, 'message', 'New Image', 'You received an image!', ?)`,
+      [otherUserId, JSON.stringify({ matchId, senderId: userId })]
+    );
+
+    // Emit socket event
+    const server = require('../server');
+    const io = server.io;
+    if (io) {
+      io.to(`match_${matchId}`).emit('new_message', {
+        matchId,
+        message: {
+          id: messageId,
+          senderId: userId,
+          content: '[Image]',
+          messageType: 'image',
+          imageUrl: result.secure_url,
+          createdAt: new Date()
+        }
+      });
+    }
+
+    res.status(201).json({
+      messageId,
+      imageUrl: result.secure_url
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.sendConnectionImageMessage = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { connectionId } = req.params;
+    const cloudinary = require('../config/cloudinary');
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No image uploaded' });
+    }
+
+    // Verify connection exists
+    const [connCheck] = await pool.query(
+      'SELECT * FROM connections WHERE id = ? AND (user1_id = ? OR user2_id = ?) AND status = "active"',
+      [connectionId, userId, userId]
+    );
+
+    if (connCheck.length === 0) {
+      return res.status(403).json({ message: 'Connection not found' });
+    }
+
+    const otherUserId = connCheck[0].user1_id === userId ? connCheck[0].user2_id : connCheck[0].user1_id;
+
+    // Upload to Cloudinary
+    const b64 = Buffer.from(req.file.buffer).toString('base64');
+    const dataURI = `data:${req.file.mimetype};base64,${b64}`;
+    
+    const result = await cloudinary.uploader.upload(dataURI, {
+      folder: 'campus-connect/connections',
+      transformation: [{ width: 800, height: 800, crop: 'limit' }]
+    });
+
+    const messageId = uuidv4();
+    const encryptedContent = encryptMessage('[Image]');
+    
+    await pool.query(
+      `INSERT INTO connection_messages (id, connection_id, sender_id, message_type, content, image_url)
+       VALUES (?, ?, ?, 'image', ?, ?)`,
+      [messageId, connectionId, userId, encryptedContent, result.secure_url]
+    );
+
+    // Emit socket event
+    const server = require('../server');
+    const io = server.io;
+    if (io) {
+      io.to(`connection_${connectionId}`).emit('new_connection_message', {
+        connectionId,
+        message: {
+          id: messageId,
+          senderId: userId,
+          content: '[Image]',
+          messageType: 'image',
+          imageUrl: result.secure_url,
+          createdAt: new Date()
+        }
+      });
+    }
+
+    res.status(201).json({
+      messageId,
+      imageUrl: result.secure_url
+    });
+  } catch (error) {
+    next(error);
+  }
+};
