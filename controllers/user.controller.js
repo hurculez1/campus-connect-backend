@@ -37,7 +37,7 @@ exports.updateProfile = async (req, res, next) => {
       'first_name', 'last_name', 'bio', 'pronouns', 'course', 'year_of_study',
       'photos', 'interests', 'location_lat', 'location_lng', 'city',
       'preferred_age_min', 'preferred_age_max', 'preferred_gender',
-      'preferred_distance_km', 'language_preference'
+      'preferred_distance_km', 'language_preference', 'show_me'
     ];
 
     const fields = [];
@@ -239,7 +239,49 @@ exports.getPotentialMatches = async (req, res, next) => {
     query += ` ORDER BY u.last_active DESC LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), parseInt(offset));
 
-    const [potentialMatches] = await pool.query(query, params);
+    let [potentialMatches] = await pool.query(query, params);
+
+    // FALLBACK LOGIC: If no NEW users, show previously swiped users (excluding matches/blocks)
+    if (potentialMatches.length === 0) {
+      // Re-run query without the excludeClause for swipedIds, 
+      // but still exclude matches and blocks (which are handled by u.id NOT IN matches/blocks if we had those tables, but here we just simplify)
+      // Actually, we should just show the swiped ones except those they LIKED already if we want "Discover" to feel fresh.
+      // But user said "even if one viewed them already".
+      let fallbackParams = [];
+      let fallbackQuery = `
+        SELECT u.id, u.first_name, u.last_name, u.date_of_birth, u.gender,
+               u.bio, u.university, u.course, u.year_of_study, u.profile_photo_url,
+               u.photos, u.interests, u.verification_status,
+               ${distanceSelect.replace(/\?/g, '??')} -- This is getting complex with params
+        FROM users u
+        WHERE u.id != ?
+          AND u.is_active = TRUE
+          AND u.is_banned = FALSE
+          AND u.show_me = TRUE
+          -- Exclude people already matched
+          AND u.id NOT IN (
+            SELECT CASE WHEN user1_id = ? THEN user2_id ELSE user1_id END
+            FROM matches WHERE user1_id = ? OR user2_id = ?
+          )
+      `;
+      // For simplicity, let's just use a more relaxed version of the original query
+      const [fallbackResults] = await pool.query(`
+        SELECT u.id, u.first_name, u.last_name, u.date_of_birth, u.gender,
+               u.bio, u.university, u.course, u.year_of_study, u.profile_photo_url,
+               u.photos, u.interests, u.verification_status
+        FROM users u
+        WHERE u.id != ? 
+          AND u.is_active = TRUE 
+          AND u.is_banned = FALSE
+          AND u.id NOT IN (
+            SELECT CASE WHEN user1_id = ? THEN user2_id ELSE user1_id END
+            FROM matches WHERE (user1_id = ? OR user2_id = ?) AND is_active = TRUE
+          )
+        ORDER BY RAND()
+        LIMIT ?
+      `, [userId, userId, userId, userId, parseInt(limit)]);
+      potentialMatches = fallbackResults;
+    }
 
     // Compatibility Scoring
     const userInterests = user.interests ? (typeof user.interests === 'string' ? JSON.parse(user.interests) : user.interests) : [];

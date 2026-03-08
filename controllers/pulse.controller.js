@@ -25,7 +25,7 @@ exports.getPosts = async (req, res, next) => {
       LEFT JOIN users u ON p.user_id = u.id
       WHERE 1=1 ${conditions}
       ORDER BY ${orderBy}
-      LIMIT 50
+      LIMIT 100
     `, params);
 
     res.json({ posts });
