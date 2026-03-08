@@ -359,9 +359,15 @@ exports.getNotificationCount = async (req, res, next) => {
   try {
     const userId = req.user.id;
     
-    // Unread messages
+    // Unread messages from matches
     const [msgCount] = await pool.query(
       'SELECT COUNT(*) as count FROM messages m JOIN matches ma ON m.match_id = ma.id WHERE (ma.user1_id = ? OR ma.user2_id = ?) AND ma.is_active = TRUE AND m.sender_id != ? AND m.is_read = FALSE',
+      [userId, userId, userId]
+    );
+
+    // Unread messages from connections
+    const [connMsgCount] = await pool.query(
+      'SELECT COUNT(*) as count FROM connection_messages cm JOIN connections c ON cm.connection_id = c.id WHERE (c.user1_id = ? OR c.user2_id = ?) AND cm.sender_id != ? AND cm.is_read = FALSE',
       [userId, userId, userId]
     );
 
@@ -374,9 +380,11 @@ exports.getNotificationCount = async (req, res, next) => {
       [userId, userId, userId]
     );
 
+    const totalMessages = msgCount[0].count + connMsgCount[0].count;
+    
     res.json({
-      total: msgCount[0].count + likesCount[0].count,
-      messages: msgCount[0].count,
+      total: totalMessages + likesCount[0].count,
+      messages: totalMessages,
       likes: likesCount[0].count
     });
   } catch (error) {
