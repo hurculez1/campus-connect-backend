@@ -71,66 +71,94 @@ exports.uploadPhoto = async (req, res, next) => {
   try {
     const userId = req.user.id;
     const file = req.file;
+    const isProfilePhoto = req.query.profile === 'true';
 
     if (!file) {
       return res.status(400).json({ message: 'No file uploaded' });
     }
 
     const cloudinary = require('../config/cloudinary');
-    const [users] = await pool.query('SELECT photos FROM users WHERE id = ?', [userId]);
+    const [users] = await pool.query('SELECT photos, profile_photo_url FROM users WHERE id = ?', [userId]);
     let photos = users[0].photos ? (typeof users[0].photos === 'string' ? JSON.parse(users[0].photos) : users[0].photos) : [];
+    let profilePhotoUrl = users[0].profile_photo_url;
 
-    // Delete and remove old primary photo
-    const oldPrimaryIndex = photos.findIndex(p => p.is_primary);
-    if (oldPrimaryIndex !== -1) {
-      const oldPrimary = photos[oldPrimaryIndex];
-      if (oldPrimary.public_id) {
-        try {
-          await cloudinary.uploader.destroy(oldPrimary.public_id);
-        } catch (err) {
-          logger.error(`Failed to delete old photo from Cloudinary: ${err.message}`);
-        }
-      }
-      photos.splice(oldPrimaryIndex, 1); // Remove from array
+    // Clean up photos array - ensure it's always an array
+    if (!Array.isArray(photos)) {
+      photos = [];
     }
 
-    const result = await cloudinary.uploader.upload(file.path, {
-      folder: 'campus-connect/profiles'
-    });
-    
+    if (isProfilePhoto) {
+      // PROFILE PHOTO: Overwrite the existing profile photo
+      const oldProfileUrl = profilePhotoUrl;
+      
+      const result = await cloudinary.uploader.upload(file.path, {
+        folder: 'campus-connect/profiles'
+      });
+      
+      // Delete old profile photo from Cloudinary
+      if (oldProfileUrl) {
+        try {
+          const publicId = oldProfileUrl.split('/').pop().split('.')[0];
+          await cloudinary.uploader.destroy(`campus-connect/profiles/${publicId}`);
+        } catch (err) {
+          logger.error(`Failed to delete old profile photo: ${err.message}`);
+        }
+      }
+      
+      profilePhotoUrl = result.secure_url;
+      
+      // Update existing primary in photos array or add new
+      const primaryIndex = photos.findIndex(p => p.is_primary);
+      if (primaryIndex !== -1) {
+        photos[primaryIndex] = { url: result.secure_url, public_id: result.public_id, is_primary: true };
+      } else {
+        photos.push({ url: result.secure_url, public_id: result.public_id, is_primary: true });
+      }
+    } else {
+      // ADDITIONAL PHOTOS: Limit to 10, reset if exceeded
+      const nonPrimaryPhotos = photos.filter(p => !p.is_primary);
+      
+      if (nonPrimaryPhotos.length >= 10) {
+        // Delete all non-primary photos from Cloudinary
+        for (const photo of nonPrimaryPhotos) {
+          if (photo.public_id) {
+            try {
+              await cloudinary.uploader.destroy(photo.public_id);
+            } catch (err) {
+              logger.error(`Failed to delete photo: ${err.message}`);
+            }
+          }
+        }
+        // Keep only profile photo
+        photos = photos.filter(p => p.is_primary);
+        logger.info(`User ${userId} reset additional photos after reaching limit`);
+      }
+      
+      const result = await cloudinary.uploader.upload(file.path, {
+        folder: 'campus-connect/profiles'
+      });
+      
+      photos.push({
+        url: result.secure_url,
+        public_id: result.public_id,
+        is_primary: false
+      });
+    }
+
     // Remove the file from tmp/uploads after upload
     const fs = require('fs');
     try { fs.unlinkSync(file.path); } catch(e) { }
 
-    const photoUrl = result.secure_url;
-    const publicId = result.public_id;
-
-    // Add new primary photo
-    photos.push({
-      url: photoUrl,
-      public_id: publicId,
-      is_primary: true
-    });
-
-    // Limit to 10 just in case, though we are replacing primary
-    if (photos.length > 10) photos.shift(); 
-
-    // Final safety check for primary
-    photos = photos.map((p, idx) => ({ ...p, is_primary: idx === photos.length - 1 }));
-
-    const updateFields = ['photos = ?', 'profile_photo_url = ?'];
-    const updateValues = [JSON.stringify(photos), photoUrl];
-
-    updateValues.push(userId);
-
     await pool.query(
-      `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
-      updateValues
+      'UPDATE users SET photos = ?, profile_photo_url = ? WHERE id = ?',
+      [JSON.stringify(photos), profilePhotoUrl, userId]
     );
 
     res.json({
-      message: 'Photo uploaded successfully',
-      photo: { url: photoUrl, public_id: publicId }
+      message: isProfilePhoto ? 'Profile photo updated' : 'Photo uploaded',
+      photoCount: photos.filter(p => !p.is_primary).length,
+      maxPhotos: 10,
+      photo: photos[photos.length - 1]
     });
   } catch (error) {
     next(error);
