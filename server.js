@@ -87,6 +87,12 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/universities', universityRoutes);
 app.use('/api/pulse', pulseRoutes);
 
+// Root route for cPanel health check
+app.get('/', (req, res) => {
+  res.setHeader('Content-Type', 'text/html');
+  res.send('<html><body><h1>Campus Connect API is Online</h1></body></html>');
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
