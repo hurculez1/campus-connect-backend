@@ -87,7 +87,7 @@ exports.swipe = async (req, res, next) => {
       );
     }
 
-    // Check for reverse swipe (match)
+    // Check for reverse swipe (match) OR shared interests for automatic match
     let isMatch = false;
     if (direction === 'like' || direction === 'super_like') {
       const [reverseSwipes] = await pool.query(
@@ -95,7 +95,29 @@ exports.swipe = async (req, res, next) => {
         [targetUserId, userId]
       );
 
-      isMatch = reverseSwipes.length > 0;
+      if (reverseSwipes.length > 0) {
+        isMatch = true;
+      } else {
+        // Check for shared interests
+        const [users] = await pool.query(
+          'SELECT interests FROM users WHERE id IN (?, ?)',
+          [userId, targetUserId]
+        );
+        
+        if (users.length === 2) {
+          try {
+            const int1 = JSON.parse(users[0].interests || '[]');
+            const int2 = JSON.parse(users[1].interests || '[]');
+            const shared = int1.filter(i => int2.includes(i));
+            if (shared.length > 0) {
+              isMatch = true;
+              logger.info(`Automatic interest match: ${userId} <-> ${targetUserId} (Shared: ${shared.join(', ')})`);
+            }
+          } catch (e) {
+            logger.error('Error parsing interests for auto-match:', e);
+          }
+        }
+      }
     }
 
     // Insert swipe

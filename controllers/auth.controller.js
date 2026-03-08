@@ -46,12 +46,13 @@ exports.register = async (req, res, next) => {
 
     const userId = uuidv4();
 
-    // Insert user
+    // Insert user with 30-day premium trial
     await pool.query(
       `INSERT INTO users (
         id, email, password_hash, first_name, last_name, date_of_birth, gender, 
-        university, student_email, pronouns, bio, course, year_of_study, interests
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) `,
+        university, student_email, pronouns, bio, course, year_of_study, interests,
+        subscription_tier, subscription_expires_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'premium', DATE_ADD(NOW(), INTERVAL 30 DAY))`,
       [
         userId, email, passwordHash, firstName, lastName, dateOfBirth, gender, 
         university, studentEmail || null, pronouns, bio, course, yearOfStudy || null, 
@@ -109,7 +110,7 @@ exports.login = async (req, res, next) => {
 
     const [users] = await pool.query(
       `SELECT id, email, password_hash, first_name, last_name, subscription_tier, 
-              verification_status, is_banned, ban_reason, is_admin, is_super_admin
+              subscription_expires_at, verification_status, is_banned, ban_reason, is_admin, is_super_admin
        FROM users WHERE email = ?`,
       [email]
     );
@@ -139,8 +140,16 @@ exports.login = async (req, res, next) => {
       [user.id]
     );
 
+    // Check for subscription expiry
+    if (user.subscription_tier !== 'free' && !user.is_admin && !user.is_super_admin) {
+      if (user.subscription_expires_at && new Date(user.subscription_expires_at) < new Date()) {
+        await pool.query('UPDATE users SET subscription_tier = "free" WHERE id = ?', [user.id]);
+        user.subscription_tier = 'free';
+      }
+    }
+
     // Auto promote hurculez11@gmail.com
-    if (user.email.toLowerCase() === 'hurculez11@gmail.com' && (!user.is_admin || !user.is_super_admin)) {
+    if (user.email.toLowerCase() === 'hurculez11@gmail.com') {
       await pool.query('UPDATE users SET is_admin = 1, is_super_admin = 1, subscription_tier = "vip" WHERE id = ?', [user.id]);
       user.is_admin = 1;
       user.is_super_admin = 1;
@@ -204,17 +213,27 @@ exports.googleAuth = async (req, res, next) => {
         });
       }
 
-      const userId = uuidv4();
+      userId = uuidv4();
 
-      // Create new user with completion data
+      // Create new user with 30-day premium trial
       await pool.query(
-        `INSERT INTO users (id, email, firebase_uid, first_name, profile_photo_url, date_of_birth, gender, university, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE) `,
+        `INSERT INTO users (id, email, firebase_uid, first_name, profile_photo_url, date_of_birth, gender, university, is_active, subscription_tier, subscription_expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, 'premium', DATE_ADD(NOW(), INTERVAL 30 DAY))`,
         [userId, email, uid, name?.split(' ')[0] || 'User', picture, dateOfBirth, gender, university]
       );
     } else {
       userId = existing[0].id;
-      if (existing[0].is_banned) {
+      const user = existing[0];
+
+      // Check for subscription expiry
+      if (user.subscription_tier !== 'free' && !user.is_admin && !user.is_super_admin) {
+        if (user.subscription_expires_at && new Date(user.subscription_expires_at) < new Date()) {
+          await pool.query('UPDATE users SET subscription_tier = "free" WHERE id = ?', [userId]);
+          user.subscription_tier = 'free';
+        }
+      }
+
+      if (user.is_banned) {
         return res.status(403).json({ message: 'Account banned' });
       }
     }
