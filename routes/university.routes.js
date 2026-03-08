@@ -5,10 +5,10 @@ const universityController = require('../controllers/university.controller');
 const multer = require('multer');
 
 const fs = require('fs');
-if (!fs.existsSync('/tmp/uploads')) {
-  fs.mkdirSync('/tmp/uploads', { recursive: true });
+if (!fs.existsSync('uploads')) {
+  fs.mkdirSync('uploads', { recursive: true });
 }
-const upload = multer({ dest: '/tmp/uploads/' });
+const upload = multer({ dest: 'uploads/' });
 
 router.get('/', universityController.getUniversities);
 router.post('/verify-email', authenticate, universityController.verifyStudentEmail);

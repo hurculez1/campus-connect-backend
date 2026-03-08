@@ -5,10 +5,10 @@ const { authenticate } = require('../middleware/auth.middleware');
 const userController = require('../controllers/user.controller');
 
 const fs = require('fs');
-if (!fs.existsSync('/tmp/uploads')) {
-  fs.mkdirSync('/tmp/uploads', { recursive: true });
+if (!fs.existsSync('uploads')) {
+  fs.mkdirSync('uploads', { recursive: true });
 }
-const upload = multer({ dest: '/tmp/uploads/' });
+const upload = multer({ dest: 'uploads/' });
 
 router.get('/profile', authenticate, userController.getProfile);
 router.put('/profile', authenticate, userController.updateProfile);

