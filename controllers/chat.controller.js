@@ -409,7 +409,7 @@ exports.sendImageMessage = async (req, res, next) => {
     const dataURI = `data:${req.file.mimetype};base64,${b64}`;
     
     const result = await cloudinary.uploader.upload(dataURI, {
-      folder: 'campus-connect/messages',
+      folder: 'campus-connect/chat/messages',
       transformation: [{ width: 800, height: 800, crop: 'limit' }]
     });
 
@@ -482,7 +482,7 @@ exports.sendConnectionImageMessage = async (req, res, next) => {
     const dataURI = `data:${req.file.mimetype};base64,${b64}`;
     
     const result = await cloudinary.uploader.upload(dataURI, {
-      folder: 'campus-connect/connections',
+      folder: 'campus-connect/chat/connections',
       transformation: [{ width: 800, height: 800, crop: 'limit' }]
     });
 

@@ -95,7 +95,7 @@ exports.uploadPhoto = async (req, res, next) => {
     }
 
     const result = await cloudinary.uploader.upload(file.path, {
-      folder: 'campus-connect/users'
+      folder: 'campus-connect/profiles'
     });
     
     // Remove the file from tmp/uploads after upload
