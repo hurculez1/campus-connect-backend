@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
+// Global error handlers
 process.on('uncaughtException', (err) => {
   console.error(new Date().toISOString() + ' UNCAUGHT: ' + err.stack + '\n');
   if (process.env.NODE_ENV !== 'production') process.exit(1);
