@@ -254,6 +254,9 @@ exports.googleAuth = async (req, res, next) => {
         firstName: name?.split(' ')[0] || 'User',
         profilePhoto: picture,
         university: existing.length > 0 ? existing[0].university : university,
+        subscriptionTier: (existing[0]?.is_admin || existing[0]?.is_super_admin) ? 'vip' : (existing[0]?.subscription_tier || 'premium'),
+        isAdmin: existing[0]?.is_admin || false,
+        isSuperAdmin: existing[0]?.is_super_admin || false,
         verificationStatus: existing.length > 0 ? existing[0].verification_status : 'not_started'
       }
     });

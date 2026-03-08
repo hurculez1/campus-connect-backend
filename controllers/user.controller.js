@@ -77,6 +77,23 @@ exports.uploadPhoto = async (req, res, next) => {
     }
 
     const cloudinary = require('../config/cloudinary');
+    const [users] = await pool.query('SELECT photos FROM users WHERE id = ?', [userId]);
+    let photos = users[0].photos ? (typeof users[0].photos === 'string' ? JSON.parse(users[0].photos) : users[0].photos) : [];
+
+    // Delete and remove old primary photo
+    const oldPrimaryIndex = photos.findIndex(p => p.is_primary);
+    if (oldPrimaryIndex !== -1) {
+      const oldPrimary = photos[oldPrimaryIndex];
+      if (oldPrimary.public_id) {
+        try {
+          await cloudinary.uploader.destroy(oldPrimary.public_id);
+        } catch (err) {
+          logger.error(`Failed to delete old photo from Cloudinary: ${err.message}`);
+        }
+      }
+      photos.splice(oldPrimaryIndex, 1); // Remove from array
+    }
+
     const result = await cloudinary.uploader.upload(file.path, {
       folder: 'campus-connect/users'
     });
@@ -88,25 +105,18 @@ exports.uploadPhoto = async (req, res, next) => {
     const photoUrl = result.secure_url;
     const publicId = result.public_id;
 
-    const [users] = await pool.query('SELECT photos FROM users WHERE id = ?', [userId]);
-
-    let photos = users[0].photos ? (typeof users[0].photos === 'string' ? JSON.parse(users[0].photos) : users[0].photos) : [];
-
-    if (photos.length >= 10) {
-      photos.shift(); // Remove oldest photo
-    }
-
+    // Add new primary photo
     photos.push({
       url: photoUrl,
       public_id: publicId,
-      is_primary: true // Make newest upload the primary photo
+      is_primary: true
     });
-    
-    // Ensure only one primary
-    photos = photos.map((p, idx) => ({
-      ...p,
-      is_primary: idx === photos.length - 1
-    }));
+
+    // Limit to 10 just in case, though we are replacing primary
+    if (photos.length > 10) photos.shift(); 
+
+    // Final safety check for primary
+    photos = photos.map((p, idx) => ({ ...p, is_primary: idx === photos.length - 1 }));
 
     const updateFields = ['photos = ?', 'profile_photo_url = ?'];
     const updateValues = [JSON.stringify(photos), photoUrl];
