@@ -4,14 +4,11 @@ const { authenticate } = require('../middleware/auth.middleware');
 const universityController = require('../controllers/university.controller');
 const multer = require('multer');
 
+const os = require('os');
 const path = require('path');
-const uploadDir = path.join(__dirname, '../uploads');
+const uploadDir = os.tmpdir();
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const fs = require('fs');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {

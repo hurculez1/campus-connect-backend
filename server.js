@@ -140,10 +140,11 @@ app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });
 
-const PORT = process.env.PORT || 5000;
+if (process.env.NODE_ENV !== 'production' || process.env.RENDER) {
+  const PORT = process.env.PORT || 5000;
+  httpServer.listen(PORT, () => {
+    logger.info(`Server running on port ${PORT}`);
+  });
+}
 
-httpServer.listen(PORT, () => {
-  logger.info(`Server running on port ${PORT}`);
-});
-
-module.exports = { app, io };
+module.exports = app;
