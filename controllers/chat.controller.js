@@ -273,9 +273,17 @@ exports.getConnectionMessages = async (req, res, next) => {
     // Get other user info
     const otherUserId = connection.user1_id === userId ? connection.user2_id : connection.user1_id;
     const [otherUser] = await pool.query(
-      'SELECT id, first_name, last_name, profile_photo_url, university, verification_status FROM users WHERE id = ?',
+      'SELECT id, first_name, last_name, profile_photo_url, university, course, year_of_study, bio, interests, gender, verification_status FROM users WHERE id = ?',
       [otherUserId]
     );
+
+    if (otherUser[0]?.interests && typeof otherUser[0].interests === 'string') {
+      try {
+        otherUser[0].interests = JSON.parse(otherUser[0].interests);
+      } catch (e) {
+        otherUser[0].interests = [];
+      }
+    }
 
     res.json({ 
       messages: decryptedMessages, 

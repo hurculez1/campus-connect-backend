@@ -211,7 +211,8 @@ exports.getMatches = async (req, res, next) => {
           WHEN m.user1_id = ? THEN m.user2_id 
           ELSE m.user1_id 
         END as other_user_id,
-        u.first_name, u.last_name, u.profile_photo_url, u.last_active,
+        u.first_name, u.last_name, u.profile_photo_url, u.last_active, u.university, u.course, u.year_of_study,
+        u.bio, u.interests, u.gender, u.verification_status,
         (SELECT content FROM messages WHERE match_id = m.id ORDER BY created_at DESC LIMIT 1) as last_message,
         (SELECT created_at FROM messages WHERE match_id = m.id ORDER BY created_at DESC LIMIT 1) as last_message_at,
         (SELECT COUNT(*) FROM messages WHERE match_id = m.id AND sender_id != ? AND is_read = FALSE) as unread_count,
@@ -224,7 +225,19 @@ exports.getMatches = async (req, res, next) => {
       [userId, userId, userId, userId, userId, parseInt(limit), parseInt(offset)]
     );
 
-    res.json({ matches });
+    // Parse interests for each match
+    const parsedMatches = matches.map(m => {
+      if (m.interests && typeof m.interests === 'string') {
+        try {
+          m.interests = JSON.parse(m.interests);
+        } catch (e) {
+          m.interests = [];
+        }
+      }
+      return m;
+    });
+
+    res.json({ matches: parsedMatches });
   } catch (error) {
     next(error);
   }
@@ -327,6 +340,7 @@ exports.getMatchById = async (req, res, next) => {
           ELSE m.user1_id 
         END as other_user_id,
         u.first_name, u.last_name, u.profile_photo_url, u.last_active, u.university, u.course, u.year_of_study,
+        u.bio, u.interests, u.gender, u.verification_status,
         m.created_at as matched_at
        FROM matches m
        JOIN users u ON u.id = CASE WHEN m.user1_id = ? THEN m.user2_id ELSE m.user1_id END
@@ -338,7 +352,17 @@ exports.getMatchById = async (req, res, next) => {
       return res.status(404).json({ message: 'Match not found or inactive' });
     }
 
-    res.json({ match: matches[0] });
+    const match = matches[0];
+    // Parse interests if it's a JSON string
+    if (match.interests && typeof match.interests === 'string') {
+      try {
+        match.interests = JSON.parse(match.interests);
+      } catch (e) {
+        match.interests = [];
+      }
+    }
+
+    res.json({ match });
   } catch (error) {
     next(error);
   }
