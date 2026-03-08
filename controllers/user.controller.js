@@ -93,14 +93,20 @@ exports.uploadPhoto = async (req, res, next) => {
     let photos = users[0].photos ? (typeof users[0].photos === 'string' ? JSON.parse(users[0].photos) : users[0].photos) : [];
 
     if (photos.length >= 10) {
-      return res.status(400).json({ message: 'Maximum 10 photos allowed' });
+      photos.shift(); // Remove oldest photo
     }
 
     photos.push({
       url: photoUrl,
       public_id: publicId,
-      is_primary: photos.length === 0
+      is_primary: true // Make newest upload the primary photo
     });
+    
+    // Ensure only one primary
+    photos = photos.map((p, idx) => ({
+      ...p,
+      is_primary: idx === photos.length - 1
+    }));
 
     const updateFields = ['photos = ?', 'profile_photo_url = ?'];
     const updateValues = [JSON.stringify(photos), photoUrl];
