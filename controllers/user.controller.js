@@ -76,17 +76,9 @@ exports.uploadPhoto = async (req, res, next) => {
       return res.status(400).json({ message: 'No file uploaded' });
     }
 
-    const cloudinary = require('../config/cloudinary');
-    const result = await cloudinary.uploader.upload(file.path, {
-      folder: 'campus-connect/users'
-    });
-    
-    // Optional: remove file from /tmp/uploads after upload to free space
-    const fs = require('fs');
-    try { fs.unlinkSync(file.path); } catch(e) { }
-
-    const photoUrl = result.secure_url;
-    const publicId = result.public_id;
+    const apiUrl = process.env.API_URL || 'https://api.quickercarts.com';
+    const photoUrl = `${apiUrl}/uploads/${file.filename}`;
+    const publicId = file.filename;
 
     const [users] = await pool.query('SELECT photos FROM users WHERE id = ?', [userId]);
 
