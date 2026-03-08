@@ -6,6 +6,16 @@ exports.createDirectMatch = async (req, res, next) => {
     const userId = req.user.id;
     const { targetUserId } = req.body;
     
+    console.log('Creating direct match:', userId, '->', targetUserId);
+    
+    if (!targetUserId) {
+      return res.status(400).json({ message: 'Target user ID required' });
+    }
+    
+    if (userId === targetUserId) {
+      return res.status(400).json({ message: 'Cannot match with yourself' });
+    }
+    
     // Sort IDs so user1 is always smaller than user2
     const user1Id = userId < targetUserId ? userId : targetUserId;
     const user2Id = userId < targetUserId ? targetUserId : userId;
@@ -21,12 +31,14 @@ exports.createDirectMatch = async (req, res, next) => {
       if (!existing[0].is_active) {
         await pool.query('UPDATE matches SET is_active = TRUE WHERE id = ?', [matchId]);
       }
+      console.log('Found existing match:', matchId);
     } else {
       const [result] = await pool.query(
         'INSERT INTO matches (user1_id, user2_id, is_active) VALUES (?, ?, TRUE)',
         [user1Id, user2Id]
       );
       matchId = result.insertId;
+      console.log('Created new match:', matchId);
     }
 
     // Create notification for target user
@@ -46,8 +58,9 @@ exports.createDirectMatch = async (req, res, next) => {
       });
     }
 
-    res.json({ matchId });
+    res.json({ matchId, success: true });
   } catch (error) {
+    console.error('Direct match error:', error);
     next(error);
   }
 };
