@@ -77,7 +77,7 @@ exports.uploadPhoto = async (req, res, next) => {
     }
 
     const apiUrl = process.env.API_URL || 'https://api.quickercarts.com';
-    const photoUrl = `${apiUrl}/uploads/${file.filename}`;
+    const photoUrl = `${apiUrl}/api/media/${file.filename}`;
     const publicId = file.filename;
 
     const [users] = await pool.query('SELECT photos FROM users WHERE id = ?', [userId]);
@@ -94,13 +94,8 @@ exports.uploadPhoto = async (req, res, next) => {
       is_primary: photos.length === 0
     });
 
-    const updateFields = ['photos = ?'];
-    const updateValues = [JSON.stringify(photos)];
-
-    if (photos.length === 1) {
-      updateFields.push('profile_photo_url = ?');
-      updateValues.push(photoUrl);
-    }
+    const updateFields = ['photos = ?', 'profile_photo_url = ?'];
+    const updateValues = [JSON.stringify(photos), photoUrl];
 
     updateValues.push(userId);
 

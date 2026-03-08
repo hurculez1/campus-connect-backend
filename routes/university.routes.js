@@ -5,13 +5,14 @@ const universityController = require('../controllers/university.controller');
 const multer = require('multer');
 
 const path = require('path');
+const uploadDir = path.join(__dirname, '../uploads');
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const fs = require('fs');
-    if (!fs.existsSync('uploads')) {
-      fs.mkdirSync('uploads', { recursive: true });
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
     }
-    cb(null, 'uploads/');
+    cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);

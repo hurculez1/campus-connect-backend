@@ -69,10 +69,10 @@ app.use('/api/', limiter);
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-app.get('/uploads/:filename', (req, res) => {
+app.get('/api/media/:filename', (req, res) => {
   const filePath = path.join(__dirname, 'uploads', req.params.filename);
-  res.sendFile(filePath, { headers: { 'Content-Type': 'image/jpeg' } }, (err) => {
-    if (err) res.status(404).send('Not found');
+  res.sendFile(filePath, { headers: { 'Content-Type': 'image/jpeg', 'Access-Control-Allow-Origin': '*' } }, (err) => {
+    if (err) res.status(404).json({ message: 'Not found' });
   });
 });
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
