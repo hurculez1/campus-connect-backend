@@ -180,9 +180,9 @@ exports.login = async (req, res, next) => {
 
 exports.googleAuth = async (req, res, next) => {
   try {
-    const { googleToken, university, dateOfBirth, gender } = req.body;
+    const { googleToken, university, dateOfBirth, gender, customEmail } = req.body;
 
-    // Use access_token to securely fetch profile from Google without needing an ID token
+    // Use access_token to securely fetch profile from Google
     const fetch = require('node-fetch');
     const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${googleToken}` }
@@ -193,15 +193,19 @@ exports.googleAuth = async (req, res, next) => {
     }
 
     const payload = await response.json();
-    const { sub: uid, email, name, picture } = payload;
+    const { sub: uid, email: googleEmail, name, picture: googlePicture } = payload;
 
-    // Check if user exists
+    // Determine which email to use for lookups/creation
+    const effectiveEmail = (customEmail || googleEmail).toLowerCase();
+
+    // Check if user exists by UID or the effective email
     const [existing] = await pool.query(
-      'SELECT * FROM users WHERE firebase_uid = ? OR email = ?',
-      [uid, email]
+      'SELECT * FROM users WHERE firebase_uid = ? OR LOWER(email) = ?',
+      [uid, effectiveEmail]
     );
 
     let userId;
+    let isNewUser = false;
 
     if (existing.length === 0) {
       if (!university || !dateOfBirth || !gender) {
@@ -209,21 +213,33 @@ exports.googleAuth = async (req, res, next) => {
         return res.json({
           isNewUser: true,
           requireMoreData: true,
-          pendingData: { uid, email, name: name?.split(' ')[0] || 'User', picture }
+          pendingData: { uid, email: effectiveEmail, name: name?.split(' ')[0] || 'User', picture: googlePicture }
         });
       }
 
+      // Check if the custom email is already taken by someone ELSE (not linked to this UID)
+      const [emailCheck] = await pool.query('SELECT id FROM users WHERE LOWER(email) = ?', [effectiveEmail]);
+      if (emailCheck.length > 0) {
+        return res.status(409).json({ message: 'This email is already linked to another account.' });
+      }
+
       userId = uuidv4();
+      isNewUser = true;
 
       // Create new user with 30-day premium trial
       await pool.query(
         `INSERT INTO users (id, email, firebase_uid, first_name, profile_photo_url, date_of_birth, gender, university, is_active, subscription_tier, subscription_expires_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, 'premium', DATE_ADD(NOW(), INTERVAL 30 DAY))`,
-        [userId, email, uid, name?.split(' ')[0] || 'User', picture, dateOfBirth, gender, university]
+        [userId, effectiveEmail, uid, name?.split(' ')[0] || 'User', googlePicture, dateOfBirth, gender, university]
       );
     } else {
       userId = existing[0].id;
       const user = existing[0];
+
+      // Update UID if it's missing but email matched
+      if (!user.firebase_uid) {
+        await pool.query('UPDATE users SET firebase_uid = ? WHERE id = ?', [uid, userId]);
+      }
 
       // Check for subscription expiry
       if (user.subscription_tier !== 'free' && !user.is_admin && !user.is_super_admin) {
@@ -239,31 +255,34 @@ exports.googleAuth = async (req, res, next) => {
     }
 
     // Auto promote hurculez11@gmail.com
-    if (email.toLowerCase() === 'hurculez11@gmail.com') {
+    if (effectiveEmail === 'hurculez11@gmail.com') {
       await pool.query('UPDATE users SET is_admin = 1, is_super_admin = 1, subscription_tier = "vip" WHERE id = ?', [userId]);
     }
 
     const token = generateToken(userId);
+    const finalUser = existing.length > 0 ? existing[0] : null;
 
     res.json({
       token,
-      isNewUser: existing.length === 0,
+      isNewUser,
       user: {
         id: userId,
-        email,
-        firstName: name?.split(' ')[0] || 'User',
-        profilePhoto: picture,
-        university: existing.length > 0 ? existing[0].university : university,
-        subscriptionTier: (existing[0]?.is_admin || existing[0]?.is_super_admin) ? 'vip' : (existing[0]?.subscription_tier || 'premium'),
-        isAdmin: existing[0]?.is_admin || false,
-        isSuperAdmin: existing[0]?.is_super_admin || false,
-        verificationStatus: existing.length > 0 ? existing[0].verification_status : 'not_started'
+        email: effectiveEmail,
+        firstName: finalUser?.first_name || name?.split(' ')[0] || 'User',
+        // CRITICAL: Prioritize DB photo over Google's incoming photo
+        profilePhoto: finalUser?.profile_photo_url || googlePicture,
+        university: finalUser?.university || university,
+        subscriptionTier: (finalUser?.is_admin || finalUser?.is_super_admin) ? 'vip' : (finalUser?.subscription_tier || 'premium'),
+        isAdmin: finalUser?.is_admin || false,
+        isSuperAdmin: finalUser?.is_super_admin || false,
+        verificationStatus: finalUser?.verification_status || 'not_started'
       }
     });
   } catch (error) {
     next(error);
   }
 };
+
 
 exports.verifyEmail = async (req, res, next) => {
   try {

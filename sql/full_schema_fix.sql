@@ -33,6 +33,8 @@ ALTER TABLE users
   ADD COLUMN IF NOT EXISTS university VARCHAR(255) DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS daily_swipes_used INT DEFAULT 0,
   ADD COLUMN IF NOT EXISTS daily_swipes_reset_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP NULL DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS last_checked_likes TIMESTAMP DEFAULT '1970-01-01 00:00:01',
   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
 
 -- ─── Grant admin access to your account ───────────────────────────────────────
@@ -108,3 +110,31 @@ INSERT INTO universities (name, student_email_domain, is_verified) VALUES
 ('MUBS', 'mubs.ac.ug', 1),
 ('Nkumba University', 'nkumbauniversity.ac.ug', 1)
 ON DUPLICATE KEY UPDATE is_verified = 1;
+
+-- Create connections table for unmatched user chat
+CREATE TABLE IF NOT EXISTS connections (
+    id VARCHAR(36) PRIMARY KEY,
+    user1_id VARCHAR(36) NOT NULL,
+    user2_id VARCHAR(36) NOT NULL,
+    initiated_by VARCHAR(36) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user1_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (user2_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_connection (user1_id, user2_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Create connection_messages table
+CREATE TABLE IF NOT EXISTS connection_messages (
+    id VARCHAR(36) PRIMARY KEY,
+    connection_id VARCHAR(36) NOT NULL,
+    sender_id VARCHAR(36) NOT NULL,
+    content TEXT NOT NULL,
+    message_type VARCHAR(20) DEFAULT 'text',
+    is_read TINYINT(1) DEFAULT 0,
+    read_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (connection_id) REFERENCES connections(id) ON DELETE CASCADE,
+    FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

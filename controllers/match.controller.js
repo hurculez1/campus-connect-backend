@@ -6,25 +6,47 @@ exports.createDirectMatch = async (req, res, next) => {
     const userId = req.user.id;
     const { targetUserId } = req.body;
     
-    // Sort IDs so user1 is always smaller than user2 to prevent duplicates
+    // Sort IDs so user1 is always smaller than user2
     const user1Id = userId < targetUserId ? userId : targetUserId;
     const user2Id = userId < targetUserId ? targetUserId : userId;
 
     const [existing] = await pool.query(
-      'SELECT id FROM matches WHERE user1_id = ? AND user2_id = ?',
+      'SELECT id, is_active FROM matches WHERE user1_id = ? AND user2_id = ?',
       [user1Id, user2Id]
     );
 
+    let matchId;
     if (existing.length > 0) {
-      return res.json({ matchId: existing[0].id });
+      matchId = existing[0].id;
+      if (!existing[0].is_active) {
+        await pool.query('UPDATE matches SET is_active = TRUE WHERE id = ?', [matchId]);
+      }
+    } else {
+      const [result] = await pool.query(
+        'INSERT INTO matches (user1_id, user2_id, is_active) VALUES (?, ?, TRUE)',
+        [user1Id, user2Id]
+      );
+      matchId = result.insertId;
     }
 
-    const [result] = await pool.query(
-      'INSERT INTO matches (user1_id, user2_id) VALUES (?, ?)',
-      [user1Id, user2Id]
+    // Create notification for target user
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body, data)
+       VALUES (?, 'match', 'New Connection!', 'Someone wants to chat with you!', ?)`,
+      [targetUserId, JSON.stringify({ matchUserId: userId, matchId })]
     );
 
-    res.json({ matchId: result.insertId });
+    // Emit socket event to target user
+    const { io } = require('../server');
+    if (io) {
+      io.to(`user_${targetUserId}`).emit('new_match', {
+        userId: userId,
+        matchId: matchId,
+        message: 'Someone wants to chat with you!'
+      });
+    }
+
+    res.json({ matchId });
   } catch (error) {
     next(error);
   }
@@ -165,7 +187,11 @@ exports.swipe = async (req, res, next) => {
     res.json({
       success: true,
       isMatch,
-      direction
+      direction,
+      matchedUser: isMatch ? {
+        id: targetUserId,
+        firstName: (await pool.query('SELECT first_name FROM users WHERE id = ?', [targetUserId]))[0][0]?.first_name || 'User'
+      } : null
     });
   } catch (error) {
     next(error);
@@ -236,6 +262,16 @@ exports.unmatch = async (req, res, next) => {
   }
 };
 
+exports.markLikesAsSeen = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    await pool.query('UPDATE users SET last_checked_likes = NOW() WHERE id = ?', [userId]);
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.getWhoLikedMe = async (req, res, next) => {
   try {
     const userId = req.user.id;
@@ -260,17 +296,49 @@ exports.getWhoLikedMe = async (req, res, next) => {
 
     const [likers] = await pool.query(
       `SELECT u.id, u.first_name, u.profile_photo_url, u.university,
-              s.created_at as liked_at
+              s.created_at as liked_at,
+              (s.created_at > COALESCE((SELECT last_checked_likes FROM users WHERE id = ?), '1970-01-01')) as is_new
        FROM swipes s
        JOIN users u ON s.swiper_id = u.id
        WHERE s.swiped_id = ? AND s.direction = 'like'
        AND s.swiper_id NOT IN (
          SELECT swiped_id FROM swipes WHERE swiper_id = ?
        )`,
-      [userId, userId]
+      [userId, userId, userId]
     );
 
-    res.json({ users: likers, count: likers.length });
+    const newCount = likers.filter(l => l.is_new).length;
+    res.json({ users: likers, count: likers.length, newCount });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getMatchById = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { matchId } = req.params;
+
+    const [matches] = await pool.query(
+      `SELECT 
+        m.id as match_id,
+        CASE 
+          WHEN m.user1_id = ? THEN m.user2_id 
+          ELSE m.user1_id 
+        END as other_user_id,
+        u.first_name, u.last_name, u.profile_photo_url, u.last_active, u.university, u.course, u.year_of_study,
+        m.created_at as matched_at
+       FROM matches m
+       JOIN users u ON u.id = CASE WHEN m.user1_id = ? THEN m.user2_id ELSE m.user1_id END
+       WHERE m.id = ? AND (m.user1_id = ? OR m.user2_id = ?) AND m.is_active = TRUE`,
+      [userId, userId, matchId, userId, userId]
+    );
+
+    if (matches.length === 0) {
+      return res.status(404).json({ message: 'Match not found or inactive' });
+    }
+
+    res.json({ match: matches[0] });
   } catch (error) {
     next(error);
   }

@@ -33,6 +33,17 @@ module.exports = (io) => {
       socket.leave(`match_${matchId}`);
     });
 
+    // Join connection room for unmatched user chat
+    socket.on('join_connection', (connectionId) => {
+      socket.join(`connection_${connectionId}`);
+      logger.debug(`User ${socket.userId} joined connection ${connectionId}`);
+    });
+
+    // Leave connection room
+    socket.on('leave_connection', (connectionId) => {
+      socket.leave(`connection_${connectionId}`);
+    });
+
     // Handle message read receipts
     socket.on('message_read', async (data) => {
       const { matchId, messageId } = data;

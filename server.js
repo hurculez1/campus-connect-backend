@@ -34,7 +34,13 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.indexOf(origin) !== -1 || origin.endsWith('.vercel.app')) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     methods: ["GET", "POST"]
   }
 });
@@ -51,9 +57,26 @@ app.use(helmet({
   },
 }));
 
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "https://frontend-hurculez1s-projects.vercel.app",
+  "https://frontend-iota-azure-90.vercel.app",
+  "http://localhost:3000"
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:3000",
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith('.vercel.app')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 app.use(compression());
@@ -147,4 +170,5 @@ if (process.env.NODE_ENV !== 'production' || process.env.RENDER) {
   });
 }
 
+app.io = io;
 module.exports = app;

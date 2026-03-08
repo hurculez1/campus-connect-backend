@@ -9,7 +9,7 @@ exports.getUniversities = async (req, res, next) => {
     res.json({ universities });
   } catch (error) {
     next(error);
-  }
+  } 
 };
 
 exports.verifyStudentEmail = async (req, res, next) => {

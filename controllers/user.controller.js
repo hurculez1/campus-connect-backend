@@ -354,3 +354,32 @@ exports.updateSettings = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.getNotificationCount = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    
+    // Unread messages
+    const [msgCount] = await pool.query(
+      'SELECT COUNT(*) as count FROM messages m JOIN matches ma ON m.match_id = ma.id WHERE (ma.user1_id = ? OR ma.user2_id = ?) AND ma.is_active = TRUE AND m.sender_id != ? AND m.is_read = FALSE',
+      [userId, userId, userId]
+    );
+
+    // New likes
+    const [likesCount] = await pool.query(
+      `SELECT COUNT(*) as count FROM swipes 
+       WHERE swiped_id = ? AND direction = 'like'
+       AND created_at > COALESCE((SELECT last_checked_likes FROM users WHERE id = ?), '1970-01-01')
+       AND swiper_id NOT IN (SELECT swiped_id FROM swipes WHERE swiper_id = ?)`,
+      [userId, userId, userId]
+    );
+
+    res.json({
+      total: msgCount[0].count + likesCount[0].count,
+      messages: msgCount[0].count,
+      likes: likesCount[0].count
+    });
+  } catch (error) {
+    next(error);
+  }
+};

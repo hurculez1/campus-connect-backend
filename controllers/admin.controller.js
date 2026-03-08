@@ -332,3 +332,12 @@ exports.getSystemInfo = async (req, res, next) => {
     });
   } catch (err) { next(err); }
 };
+
+exports.cleanupTestAccounts = async (req, res, next) => {
+  try {
+    const [result] = await pool.query(
+      "DELETE FROM users WHERE email LIKE '%ai%' OR email LIKE '%test%' OR first_name LIKE '%Test%' OR last_name LIKE '%Test%'"
+    );
+    res.json({ message: `Successfully deleted ${result.affectedRows} accounts.` });
+  } catch (err) { next(err); }
+};

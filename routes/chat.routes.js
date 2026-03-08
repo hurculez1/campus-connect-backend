@@ -8,4 +8,10 @@ router.post('/:matchId/messages', authenticate, chatController.sendMessage);
 router.delete('/messages/:messageId', authenticate, chatController.deleteMessage);
 router.get('/:matchId/icebreakers', authenticate, chatController.getIcebreakers);
 
+// Connection routes for unmatched user chat
+router.post('/connection/start', authenticate, chatController.startConnection);
+router.get('/connection/:connectionId/messages', authenticate, chatController.getConnectionMessages);
+router.post('/connection/:connectionId/messages', authenticate, chatController.sendConnectionMessage);
+router.get('/connections', authenticate, chatController.getMyConnections);
+
 module.exports = router;

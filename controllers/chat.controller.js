@@ -1,6 +1,7 @@
 const { pool } = require('../config/database');
 const CryptoJS = require('crypto-js');
 const logger = require('../utils/logger');
+const { v4: uuidv4 } = require('uuid');
 
 const ENCRYPTION_KEY = process.env.MESSAGE_ENCRYPTION_KEY || 'default-key-32-chars-long!!!!!'; // Must be 32 chars
 
@@ -106,17 +107,20 @@ exports.sendMessage = async (req, res, next) => {
     );
 
     // Emit socket event
-    const { io } = require('../server');
-    io.to(`user_${otherUserId}`).emit('new_message', {
-      matchId,
-      message: {
-        id: messageId,
-        senderId: userId,
-        content,
-        messageType,
-        createdAt: new Date()
-      }
-    });
+    const server = require('../server');
+    const io = server.io;
+    if (io) {
+      io.to(`user_${otherUserId}`).emit('new_message', {
+        matchId,
+        message: {
+          id: messageId,
+          senderId: userId,
+          content,
+          messageType,
+          createdAt: new Date()
+        }
+      });
+    }
 
     res.status(201).json({
       message: 'Message sent',
@@ -161,10 +165,208 @@ exports.getIcebreakers = async (req, res, next) => {
     const [prompts] = await pool.query(
       `SELECT * FROM icebreaker_prompts 
        WHERE is_active = TRUE 
-       ORDER BY RANDOM() LIMIT 5`
+       ORDER BY RAND() LIMIT 5`
     );
 
     res.json({ icebreakers: prompts });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── Connection Chat (for unmatched users) ───────────────────────────────────────
+
+exports.startConnection = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { targetUserId } = req.body;
+
+    if (!targetUserId) {
+      return res.status(400).json({ message: 'Target user ID required' });
+    }
+
+    // Check if connection already exists
+    const [existing] = await pool.query(
+      `SELECT * FROM connections 
+       WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)
+       AND status = 'active'`,
+      [userId, targetUserId, targetUserId, userId]
+    );
+
+    if (existing.length > 0) {
+      return res.json({ connectionId: existing[0].id, alreadyExists: true });
+    }
+
+    // Create new connection
+    const connectionId = uuidv4();
+    await pool.query(
+      `INSERT INTO connections (id, user1_id, user2_id, initiated_by) VALUES (?, ?, ?, ?)`,
+      [connectionId, userId, targetUserId, userId]
+    );
+
+    // Create notification for target user
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body, data)
+       VALUES (?, 'message', 'New Message', 'Someone wants to chat with you!', ?)`,
+      [targetUserId, JSON.stringify({ connectionId, fromUserId: userId })]
+    );
+
+    // Emit socket event
+    const server = require('../server');
+    const io = server.io;
+    if (io) {
+      io.to(`user_${targetUserId}`).emit('new_connection', {
+        connectionId,
+        fromUserId: userId,
+        message: 'Someone wants to chat with you!'
+      });
+    }
+
+    res.json({ connectionId, alreadyExists: false });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getConnectionMessages = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { connectionId } = req.params;
+    const { page = 1, limit = 50 } = req.query;
+    const offset = (page - 1) * limit;
+
+    // Verify user is part of this connection
+    const [connCheck] = await pool.query(
+      'SELECT * FROM connections WHERE id = ? AND (user1_id = ? OR user2_id = ?) AND status = "active"',
+      [connectionId, userId, userId]
+    );
+
+    if (connCheck.length === 0) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    const connection = connCheck[0];
+
+    const [messages] = await pool.query(
+      `SELECT cm.*, u.first_name, u.profile_photo_url
+       FROM connection_messages cm
+       JOIN users u ON cm.sender_id = u.id
+       WHERE cm.connection_id = ?
+       ORDER BY cm.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [connectionId, parseInt(limit), parseInt(offset)]
+    );
+
+    // Decrypt messages
+    const decryptedMessages = messages.map(msg => ({
+      ...msg,
+      content: msg.content ? decryptMessage(msg.content) : null
+    })).reverse();
+
+    // Mark messages as read
+    await pool.query(
+      `UPDATE connection_messages SET is_read = TRUE, read_at = NOW() 
+       WHERE connection_id = ? AND sender_id != ? AND is_read = FALSE`,
+      [connectionId, userId]
+    );
+
+    // Get other user info
+    const otherUserId = connection.user1_id === userId ? connection.user2_id : connection.user1_id;
+    const [otherUser] = await pool.query(
+      'SELECT id, first_name, last_name, profile_photo_url, university, verification_status FROM users WHERE id = ?',
+      [otherUserId]
+    );
+
+    res.json({ 
+      messages: decryptedMessages, 
+      connection: { ...connection, otherUser: otherUser[0] }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.sendConnectionMessage = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { connectionId } = req.params;
+    const { content, messageType = 'text' } = req.body;
+
+    // Verify connection exists and user is part of it
+    const [connCheck] = await pool.query(
+      'SELECT * FROM connections WHERE id = ? AND (user1_id = ? OR user2_id = ?) AND status = "active"',
+      [connectionId, userId, userId]
+    );
+
+    if (connCheck.length === 0) {
+      return res.status(403).json({ message: 'Connection not found or inactive' });
+    }
+
+    const connection = connCheck[0];
+    const otherUserId = connection.user1_id === userId ? connection.user2_id : connection.user1_id;
+
+    // Encrypt content
+    const encryptedContent = encryptMessage(content);
+
+    const [result] = await pool.query(
+      `INSERT INTO connection_messages (id, connection_id, sender_id, message_type, content)
+       VALUES (?, ?, ?, ?, ?)`,
+      [uuidv4(), connectionId, userId, messageType, encryptedContent]
+    );
+
+    const messageId = result.insertId;
+
+    // Create notification
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body, data)
+       VALUES (?, 'message', 'New Message', ?, ?)`,
+      [otherUserId, 'You have a new message', JSON.stringify({ connectionId, senderId: userId })]
+    );
+
+    // Emit socket event
+    const server = require('../server');
+    const io = server.io;
+    if (io) {
+      io.to(`user_${otherUserId}`).emit('new_connection_message', {
+        connectionId,
+        message: {
+          id: messageId,
+          senderId: userId,
+          content,
+          messageType,
+          createdAt: new Date()
+        }
+      });
+    }
+
+    res.status(201).json({
+      message: 'Message sent',
+      messageId,
+      content
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getMyConnections = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    const [connections] = await pool.query(
+      `SELECT c.*, 
+              u.id as other_user_id, u.first_name, u.last_name, u.profile_photo_url, u.university,
+              (SELECT content FROM connection_messages WHERE connection_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,
+              (SELECT created_at FROM connection_messages WHERE connection_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message_at,
+              (SELECT COUNT(*) FROM connection_messages WHERE connection_id = c.id AND sender_id != ? AND is_read = 0) as unread_count
+       FROM connections c
+       JOIN users u ON u.id = CASE WHEN c.user1_id = ? THEN c.user2_id ELSE c.user1_id END
+       WHERE (c.user1_id = ? OR c.user2_id = ?) AND c.status = 'active'
+       ORDER BY last_message_at DESC, c.created_at DESC`,
+      [userId, userId, userId, userId]
+    );
+
+    res.json({ connections });
   } catch (error) {
     next(error);
   }

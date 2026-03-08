@@ -40,4 +40,6 @@ router.get('/activity-log', authenticate, requireAdmin, adminController.getActiv
 router.post('/announce', authenticate, requireSuperAdmin, adminController.sendAnnouncement);
 router.get('/system', authenticate, requireSuperAdmin, adminController.getSystemInfo);
 
+router.post('/cleanup-test-accounts', authenticate, requireSuperAdmin, adminController.cleanupTestAccounts);
+
 module.exports = router;

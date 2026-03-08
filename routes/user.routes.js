@@ -23,6 +23,7 @@ router.get('/profile', authenticate, userController.getProfile);
 router.put('/profile', authenticate, userController.updateProfile);
 router.post('/photos', authenticate, upload.single('photo'), userController.uploadPhoto);
 router.get('/discover', authenticate, userController.getPotentialMatches);
+router.get('/notification-count', authenticate, userController.getNotificationCount);
 router.put('/settings', authenticate, userController.updateSettings);
 
 module.exports = router;
