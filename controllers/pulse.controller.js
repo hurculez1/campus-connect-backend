@@ -46,6 +46,14 @@ exports.createPost = async (req, res, next) => {
       [postId, userId, content, campus, isAnonymous ? 1 : 0, type || 'general']
     );
 
+    // Emit socket event for admin real-time update
+    try {
+      const { io } = require('../server');
+      if (io) {
+        io.emit('new_pulse_post', { postId, userId, campus, content });
+      }
+    } catch (e) {}
+
     res.status(201).json({
       message: 'Post created',
       postId

@@ -410,6 +410,14 @@ exports.swipe = async (req, res, next) => {
       });
 
       logger.info(`New match created: ${userId} <-> ${targetUserId}`);
+
+      // Emit global event for admin dashboard
+      try {
+        const { io } = require('../server');
+        if (io) {
+          io.emit('new_match', { userId, targetUserId });
+        }
+      } catch (e) {}
     }
 
     res.json({

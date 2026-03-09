@@ -79,12 +79,12 @@ CREATE TABLE IF NOT EXISTS blocks (
 -- Create match_requests table (for Match Now feature)
 CREATE TABLE IF NOT EXISTS match_requests (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    from_user_id VARCHAR(36) NOT NULL,
-    to_user_id VARCHAR(36) NOT NULL,
+    from_user_id INT NOT NULL,
+    to_user_id INT NOT NULL,
     status ENUM('pending', 'accepted', 'rejected') DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (from_user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (to_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_from_user (from_user_id),
+    INDEX idx_to_user (to_user_id),
     UNIQUE KEY unique_request (from_user_id, to_user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

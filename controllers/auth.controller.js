@@ -82,6 +82,16 @@ exports.register = async (req, res, next) => {
 
     logger.info(`New user registered: ${email}`);
 
+    // Emit socket event for admin real-time update
+    try {
+      const { io } = require('../server');
+      if (io) {
+        io.emit('new_user', { userId, email, firstName, createdAt: new Date() });
+      }
+    } catch (e) {
+      console.error('Socket emit error:', e);
+    }
+
     res.status(201).json({
       message: 'Registration successful',
       token,

@@ -58,6 +58,16 @@ exports.verifyStudentEmail = async (req, res, next) => {
     const { sendVerificationEmail } = require('../services/email.service');
     await sendVerificationEmail(studentEmail, token, req.user.first_name);
 
+    // Emit socket event for admin real-time update
+    try {
+      const { io } = require('../server');
+      if (io) {
+        io.emit('new_verification', { userId, university: user.university });
+      }
+    } catch (e) {
+      console.error('Socket emit error:', e);
+    }
+
     res.json({ message: 'Verification email sent' });
   } catch (error) {
     next(error);
