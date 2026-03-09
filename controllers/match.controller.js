@@ -405,20 +405,16 @@ exports.swipe = async (req, res, next) => {
       );
 
       // Emit socket event
-      const server = require('../server');
-      const io = server.io;
-      if (io) {
-        io.to(`user_${targetUserId}`).emit('new_match', {
+      if (req.app.io) {
+        req.app.io.to(`user_${targetUserId}`).emit('new_match', {
           userId: userId,
           message: 'You have a new match!'
         });
       }
     } else if (direction === 'like') {
       // Notify about a new like (not yet a match)
-      const server = require('../server');
-      const io = server.io;
-      if (io) {
-        io.to(`user_${targetUserId}`).emit('new_like', {
+      if (req.app.io) {
+        req.app.io.to(`user_${targetUserId}`).emit('new_like', {
           fromUserId: userId,
           message: 'Someone liked your profile!'
         });
@@ -426,25 +422,23 @@ exports.swipe = async (req, res, next) => {
     }
 
       logger.info(`New match created: ${userId} <-> ${targetUserId}`);
-
+ 
       // Emit global event for admin dashboard
       try {
-        const { io } = require('../server');
-        if (io) {
-          io.emit('new_match', { userId, targetUserId });
+        if (req.app.io) {
+          req.app.io.emit('new_match', { userId, targetUserId });
         }
       } catch (e) {}
-    }
 
-    res.json({
-      success: true,
-      isMatch,
-      direction,
-      matchedUser: isMatch ? {
-        id: targetUserId,
-        firstName: (await pool.query('SELECT first_name FROM users WHERE id = ?', [targetUserId]))[0][0]?.first_name || 'User'
-      } : null
-    });
+      res.json({
+        success: true,
+        isMatch,
+        direction,
+        matchedUser: isMatch ? {
+          id: targetUserId,
+          firstName: (await pool.query('SELECT first_name FROM users WHERE id = ?', [targetUserId]))[0][0]?.first_name || 'User'
+        } : null
+      });
   } catch (error) {
     next(error);
   }

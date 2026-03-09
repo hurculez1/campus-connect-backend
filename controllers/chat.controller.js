@@ -515,10 +515,8 @@ exports.sendSelfMessage = async (req, res, next) => {
     const messageId = result.insertId;
     
     // Emit for real-time (to self's personal room)
-    const server = require('../server');
-    const io = server.io;
-    if (io) {
-      io.to(`user_${userId}`).emit('new_message', { matchId: 0, senderId: userId, messageId, isSelf: true });
+    if (req.app.io) {
+      req.app.io.to(`user_${userId}`).emit('new_message', { matchId: 0, senderId: userId, messageId, isSelf: true });
     }
 
     res.json({ success: true, messageId });
@@ -550,10 +548,8 @@ exports.sendSelfImageMessage = async (req, res, next) => {
     );
     
     // Emit for real-time
-    const server = require('../server');
-    const io = server.io;
-    if (io) {
-      io.to(`user_${userId}`).emit('new_message', { matchId: 0, senderId: userId, messageId: dbRes.insertId, isSelf: true });
+    if (req.app.io) {
+      req.app.io.to(`user_${userId}`).emit('new_message', { matchId: 0, senderId: userId, messageId: dbRes.insertId, isSelf: true });
     }
 
     res.json({ success: true, messageId: dbRes.insertId, imageUrl: result.secure_url });
