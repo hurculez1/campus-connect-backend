@@ -190,7 +190,19 @@ exports.startConnection = async (req, res, next) => {
       return res.status(400).json({ message: 'Target user ID required' });
     }
 
-    // Check if connection already exists
+    // First check if they are already matched
+    const user1Id = userId < targetUserId ? userId : targetUserId;
+    const user2Id = userId < targetUserId ? targetUserId : userId;
+    const [match] = await pool.query(
+      'SELECT id FROM matches WHERE user1_id = ? AND user2_id = ? AND is_active = TRUE',
+      [user1Id, user2Id]
+    );
+
+    if (match.length > 0) {
+       return res.json({ matchId: match[0].id, alreadyExists: true, type: 'match' });
+    }
+
+    // Then check if connection already exists
     const [existing] = await pool.query(
       `SELECT * FROM connections 
        WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)
@@ -199,7 +211,7 @@ exports.startConnection = async (req, res, next) => {
     );
 
     if (existing.length > 0) {
-      return res.json({ connectionId: existing[0].id, alreadyExists: true });
+      return res.json({ connectionId: existing[0].id, alreadyExists: true, type: 'connection' });
     }
 
     // Create new connection
@@ -418,8 +430,8 @@ exports.sendImageMessage = async (req, res, next) => {
     const dataURI = `data:${req.file.mimetype};base64,${b64}`;
     
     const result = await cloudinary.uploader.upload(dataURI, {
-      folder: 'campus-connect/chat/messages',
-      transformation: [{ width: 800, height: 800, crop: 'limit' }]
+      folder: 'campus-connect/chats',
+      transformation: [{ width: 1000, height: 1000, crop: 'limit' }]
     });
 
     const encryptedContent = encryptMessage('[Image]');
@@ -501,6 +513,14 @@ exports.sendSelfMessage = async (req, res, next) => {
     );
 
     const messageId = result.insertId;
+    
+    // Emit for real-time (to self's personal room)
+    const server = require('../server');
+    const io = server.io;
+    if (io) {
+      io.to(`user_${userId}`).emit('new_message', { matchId: 0, senderId: userId, messageId, isSelf: true });
+    }
+
     res.json({ success: true, messageId });
   } catch (err) { next(err); }
 };
@@ -529,6 +549,13 @@ exports.sendSelfImageMessage = async (req, res, next) => {
       [userId, encryptedContent, encryptedContent, result.secure_url]
     );
     
+    // Emit for real-time
+    const server = require('../server');
+    const io = server.io;
+    if (io) {
+      io.to(`user_${userId}`).emit('new_message', { matchId: 0, senderId: userId, messageId: dbRes.insertId, isSelf: true });
+    }
+
     res.json({ success: true, messageId: dbRes.insertId, imageUrl: result.secure_url });
   } catch (err) { next(err); }
 };
@@ -560,8 +587,8 @@ exports.sendConnectionImageMessage = async (req, res, next) => {
     const dataURI = `data:${req.file.mimetype};base64,${b64}`;
     
     const result = await cloudinary.uploader.upload(dataURI, {
-      folder: 'campus-connect/chat/connections',
-      transformation: [{ width: 800, height: 800, crop: 'limit' }]
+      folder: 'campus-connect/chats',
+      transformation: [{ width: 1000, height: 1000, crop: 'limit' }]
     });
 
     const messageId = uuidv4();

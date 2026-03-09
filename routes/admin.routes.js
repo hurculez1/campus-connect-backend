@@ -18,6 +18,7 @@ router.delete('/users/:userId', authenticate, requireSuperAdmin, adminController
 router.post('/users/:userId/promote', authenticate, requireSuperAdmin, adminController.promoteToAdmin);
 router.post('/users/:userId/demote', authenticate, requireSuperAdmin, adminController.demoteFromAdmin);
 router.put('/users/:userId/subscription', authenticate, requireAdmin, adminController.changeUserSubscription);
+router.put('/users/:userId/edit-profile', authenticate, requireAdmin, adminController.updateUserProfile);
 
 // Content Moderation
 router.get('/pulse', authenticate, requireAdmin, adminController.getAllPulse);

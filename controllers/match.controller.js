@@ -370,9 +370,11 @@ exports.swipe = async (req, res, next) => {
       }
     }
 
-    // Insert swipe
+    // Insert swipe with handling for duplicates to avoid annoying alerts
     const [swipeResult] = await pool.query(
-      'INSERT INTO swipes (swiper_id, swiped_id, direction, is_match) VALUES (?, ?, ?, ?) ',
+      `INSERT INTO swipes (swiper_id, swiped_id, direction, is_match) 
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE direction = VALUES(direction), is_match = VALUES(is_match)`,
       [userId, targetUserId, direction, isMatch]
     );
 
@@ -399,15 +401,29 @@ exports.swipe = async (req, res, next) => {
       await pool.query(
         `INSERT INTO notifications (user_id, type, title, body, data)
          VALUES (?, 'match', 'New Match!', 'You have a new match!', ?)`,
-        [targetUserId, JSON.stringify({ matchUserId: userId })]
+        [targetUserId, JSON.stringify({ matchUserId: userId })],
       );
 
       // Emit socket event
-      const { io } = require('../server');
-      io.to(`user_${targetUserId}`).emit('new_match', {
-        userId: userId,
-        message: 'You have a new match!'
-      });
+      const server = require('../server');
+      const io = server.io;
+      if (io) {
+        io.to(`user_${targetUserId}`).emit('new_match', {
+          userId: userId,
+          message: 'You have a new match!'
+        });
+      }
+    } else if (direction === 'like') {
+      // Notify about a new like (not yet a match)
+      const server = require('../server');
+      const io = server.io;
+      if (io) {
+        io.to(`user_${targetUserId}`).emit('new_like', {
+          fromUserId: userId,
+          message: 'Someone liked your profile!'
+        });
+      }
+    }
 
       logger.info(`New match created: ${userId} <-> ${targetUserId}`);
 

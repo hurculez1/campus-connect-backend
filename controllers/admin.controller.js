@@ -44,13 +44,13 @@ exports.getDashboardStats = async (req, res, next) => {
       }
     };
 
-    const userStats = await safeQuery(`SELECT COUNT(*) as total_users,
-        SUM(CASE WHEN DATE(created_at)=CURDATE() THEN 1 ELSE 0 END) as new_today,
-        SUM(CASE WHEN created_at >= NOW() - INTERVAL 7 DAY THEN 1 ELSE 0 END) as new_week,
-        SUM(CASE WHEN subscription_tier='premium' AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') > 0 THEN 1 ELSE 0 END) as premium_users,
-        SUM(CASE WHEN subscription_tier='premium' AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') = 0 THEN 1 ELSE 0 END) as trial_users,
-        SUM(CASE WHEN subscription_tier='vip' THEN 1 ELSE 0 END) as vip_users,
-        SUM(CASE WHEN last_active >= NOW() - INTERVAL 24 HOUR THEN 1 ELSE 0 END) as active_24h,
+    const userStats = await safeQuery(`SELECT COUNT(CASE WHEN is_banned=FALSE THEN 1 END) as total_users,
+        SUM(CASE WHEN DATE(created_at)=CURDATE() AND is_banned=FALSE THEN 1 ELSE 0 END) as new_today,
+        SUM(CASE WHEN created_at >= NOW() - INTERVAL 7 DAY AND is_banned=FALSE THEN 1 ELSE 0 END) as new_week,
+        SUM(CASE WHEN subscription_tier='premium' AND is_banned=FALSE AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') > 0 THEN 1 ELSE 0 END) as premium_users,
+        SUM(CASE WHEN subscription_tier='premium' AND is_banned=FALSE AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') = 0 THEN 1 ELSE 0 END) as trial_users,
+        SUM(CASE WHEN subscription_tier='vip' AND is_banned=FALSE THEN 1 ELSE 0 END) as vip_users,
+        SUM(CASE WHEN last_active >= NOW() - INTERVAL 24 HOUR AND is_banned=FALSE THEN 1 ELSE 0 END) as active_24h,
         SUM(CASE WHEN is_banned=TRUE THEN 1 ELSE 0 END) as banned_users
         FROM users`);
 
@@ -189,6 +189,25 @@ exports.changeUserSubscription = async (req, res, next) => {
     if (!['free','premium','vip'].includes(tier)) return res.status(400).json({ message: 'Invalid tier' });
     await pool.query(`UPDATE users SET subscription_tier=? WHERE id=?`, [tier, userId]);
     res.json({ message: `Subscription changed to ${tier}` });
+  } catch (err) { next(err); }
+};
+
+exports.updateUserProfile = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const { university, interests } = req.body;
+    
+    let interestsStr = interests;
+    if (Array.isArray(interests)) {
+      interestsStr = JSON.stringify(interests);
+    }
+
+    await pool.query(
+      'UPDATE users SET university = ?, interests = ? WHERE id = ?',
+      [university, interestsStr, userId]
+    );
+
+    res.json({ success: true, message: 'User profile updated' });
   } catch (err) { next(err); }
 };
 
