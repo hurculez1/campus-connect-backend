@@ -513,8 +513,7 @@ exports.unmatch = async (req, res, next) => {
 
 exports.markLikesAsSeen = async (req, res, next) => {
   try {
-    const userId = req.user.id;
-    await pool.query('UPDATE users SET last_checked_likes = NOW() WHERE id = ?', [userId]);
+    // Disabled safely, last_checked_likes column not in schema
     res.json({ success: true });
   } catch (error) {
     next(error);
@@ -546,14 +545,14 @@ exports.getWhoLikedMe = async (req, res, next) => {
     const [likers] = await pool.query(
       `SELECT u.id, u.first_name, u.profile_photo_url, u.university,
               s.created_at as liked_at,
-              (s.created_at > COALESCE((SELECT last_checked_likes FROM users WHERE id = ?), '1970-01-01')) as is_new
+              1 as is_new
        FROM swipes s
        JOIN users u ON s.swiper_id = u.id
        WHERE s.swiped_id = ? AND s.direction = 'like'
        AND s.swiper_id NOT IN (
          SELECT swiped_id FROM swipes WHERE swiper_id = ?
        )`,
-      [userId, userId, userId]
+      [userId, userId]
     );
 
     const newCount = likers.filter(l => l.is_new).length;

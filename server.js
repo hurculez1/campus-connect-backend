@@ -132,25 +132,29 @@ app.get('/api/health', (req, res) => {
 app.get('/api/db-test', async (req, res) => {
   try {
     const { pool } = require('./config/database');
+    const { initDatabase } = require('./config/db-init');
+    await initDatabase(); // Run init manually if needed
     const [rows] = await pool.execute('SELECT 1 + 1 AS result');
+    const [userCount] = await pool.query('SELECT COUNT(*) as count FROM users');
     res.json({
       db: 'connected ✅',
-      result: rows[0].result,
       host: process.env.DB_HOST,
-      name: process.env.DB_NAME,
-      user: process.env.DB_USER
+      status: 'Tables synchronized',
+      usersInDb: userCount[0].count,
+      result: rows[0].result
     });
   } catch (err) {
     res.status(500).json({
       db: 'failed ❌',
-      error: err.message,
-      code: err.code,
       host: process.env.DB_HOST,
-      name: process.env.DB_NAME,
-      user: process.env.DB_USER
+      error: err.message
     });
   }
 });
+
+// Auto-init on startup
+const { initDatabase } = require('./config/db-init');
+initDatabase();
 
 // Socket.io authentication and handling
 io.use(socketAuth);

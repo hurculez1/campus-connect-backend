@@ -15,6 +15,11 @@ router.post('/:matchId/image', authenticate, upload.single('image'), chatControl
 router.delete('/messages/:messageId', authenticate, chatController.deleteMessage);
 router.get('/:matchId/icebreakers', authenticate, chatController.getIcebreakers);
 
+// Self chat routes (notes to self)
+router.get('/self', authenticate, chatController.getSelfMessages);
+router.post('/self', authenticate, chatController.sendSelfMessage);
+router.post('/self/image', authenticate, upload.single('image'), chatController.sendSelfImageMessage);
+
 // Connection routes for unmatched user chat
 router.post('/connection/start', authenticate, chatController.startConnection);
 router.get('/connection/:connectionId/messages', authenticate, chatController.getConnectionMessages);

@@ -9,7 +9,7 @@ exports.adminLogin = async (req, res, next) => {
   try {
     const { email, password } = req.body;
     const [users] = await pool.query(
-      'SELECT * FROM users WHERE email = ? AND is_active = TRUE',
+      'SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND is_active = TRUE',
       [email]
     );
     if (users.length === 0) return res.status(401).json({ message: 'Invalid credentials' });
@@ -20,12 +20,13 @@ exports.adminLogin = async (req, res, next) => {
     await pool.query('UPDATE users SET last_active = NOW() WHERE id = ?', [user.id]);
     const token = generateToken(user.id);
     res.json({
+      success: true,
       token,
       user: {
         id: user.id, email: user.email,
         firstName: user.first_name, lastName: user.last_name,
-        isAdmin: user.is_admin, isSuperAdmin: user.is_super_admin,
-        subscriptionTier: 'premium'
+        isAdmin: true, isSuperAdmin: user.is_super_admin ? true : false,
+        subscriptionTier: 'vip'
       }
     });
   } catch (err) { next(err); }
@@ -46,7 +47,8 @@ exports.getDashboardStats = async (req, res, next) => {
     const userStats = await safeQuery(`SELECT COUNT(*) as total_users,
         SUM(CASE WHEN DATE(created_at)=CURDATE() THEN 1 ELSE 0 END) as new_today,
         SUM(CASE WHEN created_at >= NOW() - INTERVAL 7 DAY THEN 1 ELSE 0 END) as new_week,
-        SUM(CASE WHEN subscription_tier='premium' THEN 1 ELSE 0 END) as premium_users,
+        SUM(CASE WHEN subscription_tier='premium' AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') > 0 THEN 1 ELSE 0 END) as premium_users,
+        SUM(CASE WHEN subscription_tier='premium' AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') = 0 THEN 1 ELSE 0 END) as trial_users,
         SUM(CASE WHEN subscription_tier='vip' THEN 1 ELSE 0 END) as vip_users,
         SUM(CASE WHEN last_active >= NOW() - INTERVAL 24 HOUR THEN 1 ELSE 0 END) as active_24h,
         SUM(CASE WHEN is_banned=TRUE THEN 1 ELSE 0 END) as banned_users
@@ -111,7 +113,8 @@ exports.getUsers = async (req, res, next) => {
       SELECT u.id, u.email, u.first_name, u.last_name, u.university, u.gender,
              u.subscription_tier, u.verification_status, u.is_active, u.is_banned,
              u.is_admin, u.is_super_admin, u.created_at, u.last_active, u.profile_photo_url,
-             (SELECT COUNT(*) FROM matches WHERE user1_id=u.id OR user2_id=u.id) as match_count
+             (SELECT COUNT(*) FROM matches WHERE user1_id=u.id OR user2_id=u.id) as match_count,
+             (SELECT COUNT(*) FROM payments WHERE user_id=u.id AND status='completed') as payment_count
       FROM users u WHERE 1=1 ${conditions}
       ORDER BY u.created_at DESC LIMIT ? OFFSET ?
     `, params);

@@ -101,7 +101,9 @@ exports.register = async (req, res, next) => {
         firstName,
         lastName,
         university,
-        verificationStatus: studentEmail ? 'pending' : 'not_started'
+        verificationStatus: studentEmail ? 'pending' : 'not_started',
+        profile_photo_url: null,
+        profilePhotoUrl: null
       }
     });
   } catch (error) {
@@ -120,7 +122,7 @@ exports.login = async (req, res, next) => {
 
     const [users] = await pool.query(
       `SELECT id, email, password_hash, first_name, last_name, subscription_tier, 
-              subscription_expires_at, verification_status, is_banned, ban_reason, is_admin, is_super_admin
+              subscription_expires_at, verification_status, is_banned, ban_reason, is_admin, is_super_admin, profile_photo_url
        FROM users WHERE email = ?`,
       [email]
     );
@@ -177,10 +179,13 @@ exports.login = async (req, res, next) => {
         email: user.email,
         firstName: user.first_name,
         lastName: user.last_name,
+        profile_photo_url: user.profile_photo_url,
         subscriptionTier: (user.is_admin || user.is_super_admin) ? 'vip' : (user.subscription_tier || 'free'),
         verificationStatus: user.verification_status || 'not_started',
         isAdmin: user.is_admin || false,
         isSuperAdmin: user.is_super_admin || false,
+        profile_photo_url: user.profile_photo_url || null,
+        profilePhotoUrl: user.profile_photo_url || null,
       }
     });
   } catch (error) {
@@ -279,8 +284,10 @@ exports.googleAuth = async (req, res, next) => {
         id: userId,
         email: effectiveEmail,
         firstName: finalUser?.first_name || name?.split(' ')[0] || 'User',
+        lastName: finalUser?.last_name || '', // Added lastName
+        profile_photo_url: finalUser?.profile_photo_url || googlePicture, // Added profile_photo_url
         // CRITICAL: Prioritize DB photo over Google's incoming photo
-        profilePhoto: finalUser?.profile_photo_url || googlePicture,
+        profilePhotoUrl: finalUser?.profile_photo_url || googlePicture,
         university: finalUser?.university || university,
         subscriptionTier: (finalUser?.is_admin || finalUser?.is_super_admin) ? 'vip' : (finalUser?.subscription_tier || 'premium'),
         isAdmin: finalUser?.is_admin || false,

@@ -13,13 +13,20 @@ module.exports = (io) => {
 
     // Handle typing indicator
     socket.on('typing', (data) => {
-      const { matchId, isTyping } = data;
+      const { matchId, connectionId, isTyping } = data;
       
-      // Broadcast to match room
-      socket.to(`match_${matchId}`).emit('typing', {
-        userId: socket.userId,
-        isTyping
-      });
+      if (connectionId) {
+        socket.to(`connection_${connectionId}`).emit('typing', {
+          userId: socket.userId,
+          isTyping
+        });
+      } else if (matchId) {
+        // Broadcast to match room
+        socket.to(`match_${matchId}`).emit('typing', {
+          userId: socket.userId,
+          isTyping
+        });
+      }
     });
 
     // Join match room for real-time messaging
@@ -60,6 +67,23 @@ module.exports = (io) => {
         });
       } catch (error) {
         logger.error('Message read error:', error);
+      }
+    });
+
+    socket.on('message_read_connection', async (data) => {
+      const { connectionId, messageId } = data;
+      try {
+        await pool.query(
+          'UPDATE connection_messages SET is_read = TRUE, read_at = NOW() WHERE id = ?',
+          [messageId]
+        );
+        socket.to(`connection_${connectionId}`).emit('message_read_connection', {
+          connectionId,
+          messageId,
+          readAt: new Date()
+        });
+      } catch (error) {
+        logger.error('Connection Message read error:', error);
       }
     });
 

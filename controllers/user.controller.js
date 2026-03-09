@@ -10,7 +10,7 @@ exports.getProfile = async (req, res, next) => {
               bio, university, course, year_of_study, profile_photo_url, photos,
               interests, location_lat, location_lng, city, subscription_tier,
               verification_status, preferred_age_min, preferred_age_max, preferred_gender,
-              preferred_distance_km, language_preference, created_at,
+              preferred_distance_km, language_preference, is_admin, is_super_admin, created_at,
               (SELECT COUNT(*) FROM matches WHERE user1_id=id OR user2_id=id) as match_count,
               (SELECT COUNT(*) FROM messages WHERE sender_id=id) as message_count
        FROM users
@@ -399,21 +399,33 @@ exports.getNotificationCount = async (req, res, next) => {
       [userId, userId, userId]
     );
 
-    // New likes
+    // New likes (simplified to avoid schema errors)
     const [likesCount] = await pool.query(
       `SELECT COUNT(*) as count FROM swipes 
        WHERE swiped_id = ? AND direction = 'like'
-       AND created_at > COALESCE((SELECT last_checked_likes FROM users WHERE id = ?), '1970-01-01')
        AND swiper_id NOT IN (SELECT swiped_id FROM swipes WHERE swiper_id = ?)`,
-      [userId, userId, userId]
+      [userId, userId]
     );
 
+    // Pending match requests (received)
+    let reqCount = [{ count: 0 }];
+    try {
+      [reqCount] = await pool.query(
+        'SELECT COUNT(*) as count FROM match_requests WHERE to_user_id = ? AND status = "pending"',
+        [userId]
+      );
+    } catch(e) {
+      // Ignore if match_requests table schema mismatch
+    }
+
     const totalMessages = msgCount[0].count + connMsgCount[0].count;
+    const totalRequests = reqCount[0].count;
     
     res.json({
-      total: totalMessages + likesCount[0].count,
+      total: totalMessages + likesCount[0].count + totalRequests,
       messages: totalMessages,
-      likes: likesCount[0].count
+      likes: likesCount[0].count,
+      requests: totalRequests
     });
   } catch (error) {
     next(error);

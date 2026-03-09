@@ -93,7 +93,7 @@ exports.sendMessage = async (req, res, next) => {
 
     const [result] = await pool.query(
       `INSERT INTO messages (match_id, sender_id, message_type, content, encrypted_payload)
-       VALUES (?, ?, ?, ?, ?) `,
+       VALUES (?, ?, ?, ?, ?)`,
       [matchId, userId, messageType, encryptedContent, encryptedContent]
     );
 
@@ -110,14 +110,18 @@ exports.sendMessage = async (req, res, next) => {
     const server = require('../server');
     const io = server.io;
     if (io) {
-      io.to(`user_${otherUserId}`).emit('new_message', {
+      io.to(`match_${matchId}`).emit('new_message', {
         matchId,
         message: {
           id: messageId,
           senderId: userId,
+          sender_id: userId,
           content,
           messageType,
-          createdAt: new Date()
+          message_type: messageType,
+          media_url: null,
+          created_at: new Date(),
+          is_read: false
         }
       });
     }
@@ -125,7 +129,8 @@ exports.sendMessage = async (req, res, next) => {
     res.status(201).json({
       message: 'Message sent',
       messageId,
-      content
+      content,
+      success: true
     });
   } catch (error) {
     next(error);
@@ -316,13 +321,13 @@ exports.sendConnectionMessage = async (req, res, next) => {
     // Encrypt content
     const encryptedContent = encryptMessage(content);
 
-    const [result] = await pool.query(
+    const messageId = uuidv4();
+
+    await pool.query(
       `INSERT INTO connection_messages (id, connection_id, sender_id, message_type, content)
        VALUES (?, ?, ?, ?, ?)`,
-      [uuidv4(), connectionId, userId, messageType, encryptedContent]
+      [messageId, connectionId, userId, messageType, encryptedContent]
     );
-
-    const messageId = result.insertId;
 
     // Create notification
     await pool.query(
@@ -335,14 +340,18 @@ exports.sendConnectionMessage = async (req, res, next) => {
     const server = require('../server');
     const io = server.io;
     if (io) {
-      io.to(`user_${otherUserId}`).emit('new_connection_message', {
+      io.to(`connection_${connectionId}`).emit('new_connection_message', {
         connectionId,
         message: {
           id: messageId,
           senderId: userId,
+          sender_id: userId,
           content,
           messageType,
-          createdAt: new Date()
+          message_type: messageType,
+          media_url: null,
+          created_at: new Date(),
+          is_read: false
         }
       });
     }
@@ -413,14 +422,15 @@ exports.sendImageMessage = async (req, res, next) => {
       transformation: [{ width: 800, height: 800, crop: 'limit' }]
     });
 
-    const messageId = uuidv4();
     const encryptedContent = encryptMessage('[Image]');
     
-    await pool.query(
-      `INSERT INTO messages (id, match_id, sender_id, message_type, content, image_url)
-       VALUES (?, ?, ?, 'image', ?, ?)`,
-      [messageId, matchId, userId, encryptedContent, result.secure_url]
+    const [dbResult] = await pool.query(
+      `INSERT INTO messages (match_id, sender_id, message_type, content, media_url, encrypted_payload)
+       VALUES (?, ?, 'image', ?, ?, ?)`,
+      [matchId, userId, encryptedContent, result.secure_url, encryptedContent]
     );
+
+    const messageId = dbResult.insertId;
 
     // Create notification
     await pool.query(
@@ -453,6 +463,74 @@ exports.sendImageMessage = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+};
+
+// --- SELF CHAT (NOTES) ---
+exports.getSelfMessages = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    // Using match_id = 0 for self chat
+    const [messages] = await pool.query(
+      `SELECT id, content, message_type, media_url as imageUrl, created_at 
+       FROM messages 
+       WHERE sender_id = ? AND (match_id = 0 OR match_id IS NULL) 
+       ORDER BY created_at ASC`,
+      [userId]
+    );
+
+    const decryptedMessages = messages.map(msg => ({
+      ...msg,
+      content: msg.content ? decryptMessage(msg.content) : null
+    }));
+
+    res.json({ success: true, messages: decryptedMessages });
+  } catch (err) { next(err); }
+};
+
+exports.sendSelfMessage = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { content } = req.body;
+    
+    const encryptedContent = encryptMessage(content);
+    
+    const [result] = await pool.query(
+      `INSERT INTO messages (sender_id, match_id, content, encrypted_payload, message_type, is_read) 
+       VALUES (?, 0, ?, ?, 'text', 1)`,
+      [userId, encryptedContent, encryptedContent]
+    );
+
+    const messageId = result.insertId;
+    res.json({ success: true, messageId });
+  } catch (err) { next(err); }
+};
+
+exports.sendSelfImageMessage = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const file = req.file;
+    if (!file) return res.status(400).json({ message: 'No file uploaded' });
+
+    const cloudinary = require('../config/cloudinary');
+    // Upload from buffer
+    const b64 = Buffer.from(file.buffer).toString('base64');
+    const dataURI = `data:${file.mimetype};base64,${b64}`;
+    
+    const result = await cloudinary.uploader.upload(dataURI, { 
+      folder: 'campus-connect/chats',
+      transformation: [{ width: 1000, height: 1000, crop: 'limit' }]
+    });
+    
+    const encryptedContent = encryptMessage('[Image]');
+    
+    const [dbRes] = await pool.query(
+      `INSERT INTO messages (sender_id, match_id, content, encrypted_payload, message_type, media_url, is_read) 
+       VALUES (?, 0, ?, ?, 'image', ?, 1)`,
+      [userId, encryptedContent, encryptedContent, result.secure_url]
+    );
+    
+    res.json({ success: true, messageId: dbRes.insertId, imageUrl: result.secure_url });
+  } catch (err) { next(err); }
 };
 
 exports.sendConnectionImageMessage = async (req, res, next) => {
@@ -490,7 +568,7 @@ exports.sendConnectionImageMessage = async (req, res, next) => {
     const encryptedContent = encryptMessage('[Image]');
     
     await pool.query(
-      `INSERT INTO connection_messages (id, connection_id, sender_id, message_type, content, image_url)
+      `INSERT INTO connection_messages (id, connection_id, sender_id, message_type, content, media_url)
        VALUES (?, ?, ?, 'image', ?, ?)`,
       [messageId, connectionId, userId, encryptedContent, result.secure_url]
     );
@@ -504,15 +582,16 @@ exports.sendConnectionImageMessage = async (req, res, next) => {
         message: {
           id: messageId,
           senderId: userId,
+          sender_id: userId,
           content: '[Image]',
           messageType: 'image',
-          imageUrl: result.secure_url,
-          createdAt: new Date()
+          message_type: 'image',
+          media_url: result.secure_url,
+          created_at: new Date(),
+          is_read: false
         }
       });
-    }
-
-    res.status(201).json({
+    }res.status(201).json({
       messageId,
       imageUrl: result.secure_url
     });
