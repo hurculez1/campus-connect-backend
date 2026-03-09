@@ -148,12 +148,13 @@ app.get('/api/db-test', async (req, res) => {
   }
 });
 
-// Auto-init on startup (resilient)
+// Auto-init on startup (resilient) - ONLY run in non-production or if explictly told
 const { initDatabase } = require('./config/db-init');
-initDatabase().catch(err => {
-  console.error('Database auto-init failed:', err.message);
-  // Don't exit process in production Vercel environment
-});
+if (process.env.NODE_ENV !== 'production' || process.env.INIT_DB) {
+  initDatabase().catch(err => {
+    console.error('Database auto-init failed:', err.message);
+  });
+}
 
 // Socket.io authentication and handling
 io.use(socketAuth);
