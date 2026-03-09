@@ -75,3 +75,16 @@ CREATE TABLE IF NOT EXISTS blocks (
     FOREIGN KEY (blocked_id) REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE KEY unique_block (blocker_id, blocked_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Create match_requests table (for Match Now feature)
+CREATE TABLE IF NOT EXISTS match_requests (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    from_user_id VARCHAR(36) NOT NULL,
+    to_user_id VARCHAR(36) NOT NULL,
+    status ENUM('pending', 'accepted', 'rejected') DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (from_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_request (from_user_id, to_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

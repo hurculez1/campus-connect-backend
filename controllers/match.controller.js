@@ -1,6 +1,221 @@
 const { pool } = require('../config/database');
 const logger = require('../utils/logger');
 
+// Create a pending match request (Match Now)
+exports.createMatchRequest = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { targetUserId } = req.body;
+    
+    console.log('Creating match request:', userId, '->', targetUserId);
+    
+    if (!targetUserId) {
+      return res.status(400).json({ message: 'Target user ID required' });
+    }
+    
+    if (userId === targetUserId) {
+      return res.status(400).json({ message: 'Cannot match with yourself' });
+    }
+    
+    // Check if already matched or request already exists
+    const user1Id = userId < targetUserId ? userId : targetUserId;
+    const user2Id = userId < targetUserId ? targetUserId : userId;
+
+    const [existing] = await pool.query(
+      'SELECT id, status FROM match_requests WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)',
+      [userId, targetUserId, targetUserId, userId]
+    );
+
+    if (existing.length > 0) {
+      if (existing[0].status === 'accepted') {
+        return res.status(400).json({ message: 'Already matched with this user' });
+      }
+      if (existing[0].status === 'pending') {
+        return res.status(400).json({ message: 'Request already sent' });
+      }
+    }
+
+    // Create pending request
+    const [result] = await pool.query(
+      'INSERT INTO match_requests (from_user_id, to_user_id, status) VALUES (?, ?, ?)',
+      [userId, targetUserId, 'pending']
+    );
+    
+    const requestId = result.insertId;
+    console.log('Created match request:', requestId);
+
+    // Create notification for target user
+    const [fromUser] = await pool.query(
+      'SELECT first_name, profile_photo_url FROM users WHERE id = ?',
+      [userId]
+    );
+    
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body, data)
+       VALUES (?, 'match_request', 'New Match Request!', ?, ?)`,
+      [targetUserId, `${fromUser[0]?.first_name || 'Someone'} wants to connect with you!`, JSON.stringify({ requestId, fromUserId: userId })]
+    );
+
+    // Emit socket event to target user
+    const { io } = require('../server');
+    if (io) {
+      io.to(`user_${targetUserId}`).emit('match_request', {
+        requestId,
+        fromUserId: userId,
+        fromUserName: fromUser[0]?.first_name,
+        message: 'You have a new match request!'
+      });
+    }
+
+    res.json({ success: true, requestId, message: 'Match request sent!' });
+  } catch (error) {
+    console.error('Match request error:', error);
+    next(error);
+  }
+};
+
+// Accept a match request
+exports.acceptMatchRequest = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { requestId } = req.body;
+    
+    console.log('Accepting match request:', requestId, 'by user:', userId);
+    
+    if (!requestId) {
+      return res.status(400).json({ message: 'Request ID required' });
+    }
+    
+    // Get the request
+    const [requests] = await pool.query(
+      'SELECT * FROM match_requests WHERE id = ? AND to_user_id = ? AND status = ?',
+      [requestId, userId, 'pending']
+    );
+
+    if (requests.length === 0) {
+      return res.status(404).json({ message: 'Request not found or already processed' });
+    }
+
+    const request = requests[0];
+    const fromUserId = request.from_user_id;
+
+    // Update request status
+    await pool.query(
+      'UPDATE match_requests SET status = ? WHERE id = ?',
+      ['accepted', requestId]
+    );
+
+    // Create actual match
+    const user1Id = userId < fromUserId ? userId : fromUserId;
+    const user2Id = userId < fromUserId ? fromUserId : userId;
+
+    const [existingMatch] = await pool.query(
+      'SELECT id FROM matches WHERE user1_id = ? AND user2_id = ?',
+      [user1Id, user2Id]
+    );
+
+    let matchId;
+    if (existingMatch.length > 0) {
+      matchId = existingMatch[0].id;
+      await pool.query('UPDATE matches SET is_active = TRUE WHERE id = ?', [matchId]);
+    } else {
+      const [result] = await pool.query(
+        'INSERT INTO matches (user1_id, user2_id, is_active) VALUES (?, ?, TRUE)',
+        [user1Id, user2Id]
+      );
+      matchId = result.insertId;
+    }
+
+    // Create notification for the request sender
+    const [toUser] = await pool.query(
+      'SELECT first_name FROM users WHERE id = ?',
+      [userId]
+    );
+    
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body, data)
+       VALUES (?, 'match', 'Match Accepted!', ?, ?)`,
+      [fromUserId, `${toUser[0]?.first_name || 'Someone'} accepted your match request!`, JSON.stringify({ matchId })]
+    );
+
+    // Emit socket event
+    const { io } = require('../server');
+    if (io) {
+      io.to(`user_${fromUserId}`).emit('match_accepted', {
+        matchId,
+        fromUserId: userId,
+        message: 'Your match request was accepted!'
+      });
+    }
+
+    res.json({ success: true, matchId, message: 'Match accepted!' });
+  } catch (error) {
+    console.error('Accept match error:', error);
+    next(error);
+  }
+};
+
+// Reject a match request
+exports.rejectMatchRequest = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { requestId } = req.body;
+    
+    console.log('Rejecting match request:', requestId, 'by user:', userId);
+    
+    if (!requestId) {
+      return res.status(400).json({ message: 'Request ID required' });
+    }
+    
+    await pool.query(
+      'UPDATE match_requests SET status = ? WHERE id = ? AND to_user_id = ? AND status = ?',
+      ['rejected', requestId, userId, 'pending']
+    );
+
+    res.json({ success: true, message: 'Match request rejected' });
+  } catch (error) {
+    console.error('Reject match error:', error);
+    next(error);
+  }
+};
+
+// Get pending match requests
+exports.getPendingRequests = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    // Get requests sent to me
+    const [received] = await pool.query(
+      `SELECT mr.*, u.first_name, u.last_name, u.profile_photo_url, u.university, u.course
+       FROM match_requests mr
+       JOIN users u ON u.id = mr.from_user_id
+       WHERE mr.to_user_id = ? AND mr.status = 'pending'
+       ORDER BY mr.created_at DESC`,
+      [userId]
+    );
+
+    // Get requests I sent
+    const [sent] = await pool.query(
+      `SELECT mr.*, u.first_name, u.last_name, u.profile_photo_url, u.university, u.course
+       FROM match_requests mr
+       JOIN users u ON u.id = mr.to_user_id
+       WHERE mr.from_user_id = ? AND mr.status = 'pending'
+       ORDER BY mr.created_at DESC`,
+      [userId]
+    );
+
+    res.json({ 
+      received: received,
+      sent: sent,
+      receivedCount: received.length,
+      sentCount: sent.length
+    });
+  } catch (error) {
+    console.error('Get pending requests error:', error);
+    next(error);
+  }
+};
+
 exports.createDirectMatch = async (req, res, next) => {
   try {
     const userId = req.user.id;
