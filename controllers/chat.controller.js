@@ -37,7 +37,7 @@ exports.getMessages = async (req, res, next) => {
        FROM messages m
        JOIN users u ON m.sender_id = u.id
        WHERE m.match_id = ? AND m.is_deleted = FALSE
-       ORDER BY m.created_at DESC
+       ORDER BY m.created_at DESC, m.id DESC
        LIMIT ? OFFSET ?`,
       [matchId, parseInt(limit), parseInt(offset)]
     );
@@ -278,7 +278,7 @@ exports.getConnectionMessages = async (req, res, next) => {
        FROM connection_messages cm
        JOIN users u ON cm.sender_id = u.id
        WHERE cm.connection_id = ?
-       ORDER BY cm.created_at DESC
+       ORDER BY cm.created_at DESC, cm.id DESC
        LIMIT ? OFFSET ?`,
       [connectionId, parseInt(limit), parseInt(offset)]
     );
