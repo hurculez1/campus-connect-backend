@@ -11,8 +11,10 @@ exports.getProfile = async (req, res, next) => {
               interests, location_lat, location_lng, city, subscription_tier,
               verification_status, preferred_age_min, preferred_age_max, preferred_gender,
               preferred_distance_km, language_preference, is_admin, is_super_admin, created_at,
-              (SELECT COUNT(*) FROM matches WHERE user1_id=id OR user2_id=id) as match_count,
-              (SELECT COUNT(*) FROM messages WHERE sender_id=id) as message_count
+              ((SELECT COUNT(*) FROM matches WHERE (user1_id=users.id OR user2_id=users.id) AND is_active=TRUE) + 
+               (SELECT COUNT(*) FROM connections WHERE (user1_id=users.id OR user2_id=users.id))) as match_count,
+              ((SELECT COUNT(*) FROM messages WHERE sender_id=users.id) + 
+               (SELECT COUNT(*) FROM connection_messages WHERE sender_id=users.id)) as message_count
        FROM users
        WHERE id = ?`,
       [userId]
@@ -36,7 +38,10 @@ exports.getUserProfile = async (req, res, next) => {
       `SELECT id, first_name, last_name, date_of_birth, gender, pronouns,
               bio, university, course, year_of_study, profile_photo_url, photos,
               interests, subscription_tier, verification_status, created_at,
-              (SELECT COUNT(*) FROM matches WHERE user1_id=id OR user2_id=id) as match_count
+              ((SELECT COUNT(*) FROM matches WHERE (user1_id=users.id OR user2_id=users.id) AND is_active=TRUE) + 
+               (SELECT COUNT(*) FROM connections WHERE (user1_id=users.id OR user2_id=users.id))) as match_count,
+              ((SELECT COUNT(*) FROM messages WHERE sender_id=users.id) + 
+               (SELECT COUNT(*) FROM connection_messages WHERE sender_id=users.id)) as message_count
        FROM users
        WHERE id = ?`,
       [userId]
