@@ -42,11 +42,22 @@ exports.getMessages = async (req, res, next) => {
       [matchId, parseInt(limit), parseInt(offset)]
     );
 
-    // Decrypt messages
-    const decryptedMessages = messages.map(msg => ({
-      ...msg,
-      content: msg.content ? decryptMessage(msg.content) : null
-    })).reverse();
+    // Decrypt messages — skip decryption for image/media types
+    const decryptedMessages = messages.map(msg => {
+      // Ensure ISO string for created_at
+      if (msg.created_at) msg.created_at = new Date(msg.created_at).toISOString();
+      if (msg.read_at) msg.read_at = new Date(msg.read_at).toISOString();
+
+      if (msg.message_type === 'image' || !msg.content) {
+        return { ...msg, content: msg.content || '[Image]' };
+      }
+      try {
+        const dec = decryptMessage(msg.content);
+        return { ...msg, content: dec || msg.content };
+      } catch (e) {
+        return { ...msg };
+      }
+    }).reverse();
 
     // Mark messages as read
     await pool.query(
@@ -90,11 +101,12 @@ exports.sendMessage = async (req, res, next) => {
 
     // Encrypt content
     const encryptedContent = encryptMessage(content);
+    const finalCreatedAt = req.body.createdAt || new Date().toISOString();
 
     const [result] = await pool.query(
-      `INSERT INTO messages (match_id, sender_id, message_type, content, encrypted_payload)
-       VALUES (?, ?, ?, ?, ?)`,
-      [matchId, userId, messageType, encryptedContent, encryptedContent]
+      `INSERT INTO messages (match_id, sender_id, message_type, content, encrypted_payload, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [matchId, userId, messageType, encryptedContent, encryptedContent, finalCreatedAt]
     );
 
     const messageId = result.insertId;
@@ -107,10 +119,8 @@ exports.sendMessage = async (req, res, next) => {
     );
 
     // Emit socket event
-    const server = require('../server');
-    const io = server.io;
-    if (io) {
-      io.to(`match_${matchId}`).emit('new_message', {
+    if (req.app.io) {
+      req.app.io.to(`match_${matchId}`).emit('new_message', {
         matchId,
         message: {
           id: messageId,
@@ -120,7 +130,7 @@ exports.sendMessage = async (req, res, next) => {
           messageType,
           message_type: messageType,
           media_url: null,
-          created_at: new Date(),
+          created_at: finalCreatedAt,
           is_read: false
         }
       });
@@ -130,6 +140,7 @@ exports.sendMessage = async (req, res, next) => {
       message: 'Message sent',
       messageId,
       content,
+      created_at: finalCreatedAt,
       success: true
     });
   } catch (error) {
@@ -199,7 +210,7 @@ exports.startConnection = async (req, res, next) => {
     );
 
     if (match.length > 0) {
-       return res.json({ matchId: match[0].id, alreadyExists: true, type: 'match' });
+      return res.json({ matchId: match[0].id, alreadyExists: true, type: 'match' });
     }
 
     // Then check if connection already exists
@@ -229,10 +240,8 @@ exports.startConnection = async (req, res, next) => {
     );
 
     // Emit socket event
-    const server = require('../server');
-    const io = server.io;
-    if (io) {
-      io.to(`user_${targetUserId}`).emit('new_connection', {
+    if (req.app.io) {
+      req.app.io.to(`user_${targetUserId}`).emit('new_connection', {
         connectionId,
         fromUserId: userId,
         message: 'Someone wants to chat with you!'
@@ -275,10 +284,14 @@ exports.getConnectionMessages = async (req, res, next) => {
     );
 
     // Decrypt messages
-    const decryptedMessages = messages.map(msg => ({
-      ...msg,
-      content: msg.content ? decryptMessage(msg.content) : null
-    })).reverse();
+    const decryptedMessages = messages.map(msg => {
+      if (msg.created_at) msg.created_at = new Date(msg.created_at).toISOString();
+      
+      return {
+        ...msg,
+        content: (msg.message_type === 'image' || !msg.content) ? msg.content : decryptMessage(msg.content)
+      };
+    }).reverse();
 
     // Mark messages as read
     await pool.query(
@@ -302,8 +315,8 @@ exports.getConnectionMessages = async (req, res, next) => {
       }
     }
 
-    res.json({ 
-      messages: decryptedMessages, 
+    res.json({
+      messages: decryptedMessages,
       connection: { ...connection, otherUser: otherUser[0] }
     });
   } catch (error) {
@@ -334,11 +347,12 @@ exports.sendConnectionMessage = async (req, res, next) => {
     const encryptedContent = encryptMessage(content);
 
     const messageId = uuidv4();
+    const finalCreatedAt = req.body.createdAt || new Date().toISOString();
 
     await pool.query(
-      `INSERT INTO connection_messages (id, connection_id, sender_id, message_type, content)
-       VALUES (?, ?, ?, ?, ?)`,
-      [messageId, connectionId, userId, messageType, encryptedContent]
+      `INSERT INTO connection_messages (id, connection_id, sender_id, message_type, content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [messageId, connectionId, userId, messageType, encryptedContent, finalCreatedAt]
     );
 
     // Create notification
@@ -362,7 +376,7 @@ exports.sendConnectionMessage = async (req, res, next) => {
           messageType,
           message_type: messageType,
           media_url: null,
-          created_at: new Date(),
+          created_at: finalCreatedAt,
           is_read: false
         }
       });
@@ -371,7 +385,8 @@ exports.sendConnectionMessage = async (req, res, next) => {
     res.status(201).json({
       message: 'Message sent',
       messageId,
-      content
+      content,
+      created_at: finalCreatedAt
     });
   } catch (error) {
     next(error);
@@ -383,8 +398,8 @@ exports.getMyConnections = async (req, res, next) => {
     const userId = req.user.id;
 
     const [connections] = await pool.query(
-      `SELECT c.*, 
-              u.id as other_user_id, u.first_name, u.last_name, u.profile_photo_url, u.university,
+      `SELECT c.id as id, c.id as connection_id, c.user1_id, c.user2_id, c.status, c.created_at,
+              u.id as userId, u.id as other_user_id, u.first_name, u.last_name, u.profile_photo_url, u.university,
               (SELECT content FROM connection_messages WHERE connection_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,
               (SELECT created_at FROM connection_messages WHERE connection_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message_at,
               (SELECT COUNT(*) FROM connection_messages WHERE connection_id = c.id AND sender_id != ? AND is_read = 0) as unread_count
@@ -395,10 +410,105 @@ exports.getMyConnections = async (req, res, next) => {
       [userId, userId, userId, userId]
     );
 
-    res.json({ connections });
+    const decryptedConnections = connections.map(c => {
+      if (c.last_message && c.last_message !== '[Image]') {
+        try {
+          c.last_message = decryptMessage(c.last_message);
+        } catch (e) { /* use raw */ }
+      }
+      // ISO dates
+      if (c.created_at) c.created_at = new Date(c.created_at).toISOString();
+      if (c.last_message_at) c.last_message_at = new Date(c.last_message_at).toISOString();
+      
+      return c;
+    });
+
+    res.json({ connections: decryptedConnections });
   } catch (error) {
     next(error);
   }
+};
+
+// ─── Cloudinary Direct Upload (bypasses Vercel multipart limit) ─────────────
+exports.getCloudinaryUploadParams = (req, res) => {
+  try {
+    const cloudinary = require('../config/cloudinary');
+    const timestamp = Math.round(Date.now() / 1000);
+    const folder = 'campus-connect/chats';
+    const apiSecret = process.env.CLOUDINARY_API_SECRET || 'sBronDdU9Pg96Z5DgCRvIuCMlpM';
+    const signature = cloudinary.utils.api_sign_request({ folder, timestamp }, apiSecret);
+    res.json({
+      cloudName: cloudinary.config().cloud_name || 'dcy491xs1',
+      apiKey: cloudinary.config().api_key || '727353244934744',
+      timestamp, signature, folder
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.saveImageMessage = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { matchId } = req.params;
+    const { imageUrl } = req.body;
+    if (!imageUrl) return res.status(400).json({ message: 'imageUrl required' });
+
+    const [matchCheck] = await pool.query(
+      'SELECT * FROM matches WHERE id = ? AND (user1_id = ? OR user2_id = ?) AND is_active = TRUE',
+      [matchId, userId, userId]
+    );
+    if (matchCheck.length === 0) return res.status(403).json({ message: 'Access denied' });
+    const otherUserId = matchCheck[0].user1_id === userId ? matchCheck[0].user2_id : matchCheck[0].user1_id;
+
+    const finalCreatedAt = req.body.createdAt || new Date().toISOString();
+    const [dbResult] = await pool.query(
+      `INSERT INTO messages (match_id, sender_id, message_type, content, media_url, created_at) VALUES (?, ?, 'image', '[Image]', ?, ?)`,
+      [matchId, userId, imageUrl, finalCreatedAt]
+    );
+    const messageId = dbResult.insertId;
+    const msg = { id: messageId, sender_id: userId, content: '[Image]', message_type: 'image', media_url: imageUrl, created_at: finalCreatedAt, is_read: false };
+
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body, data) VALUES (?, 'message', 'New Photo', 'You received a photo!', ?)`,
+      [otherUserId, JSON.stringify({ matchId, senderId: userId })]
+    ).catch(() => {});
+
+    if (req.app.io) {
+      req.app.io.to(`match_${matchId}`).emit('new_message', { matchId, message: { ...msg, created_at: msg.created_at } });
+    }
+    res.json({ messageId, message: { ...msg, created_at: msg.created_at } });
+  } catch (err) { next(err); }
+};
+
+exports.saveConnectionImageMessage = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { connectionId } = req.params;
+    const { imageUrl } = req.body;
+    if (!imageUrl) return res.status(400).json({ message: 'imageUrl required' });
+
+    const [connCheck] = await pool.query(
+      'SELECT * FROM connections WHERE id = ? AND (user1_id = ? OR user2_id = ?) AND status = "active"',
+      [connectionId, userId, userId]
+    );
+    if (connCheck.length === 0) return res.status(403).json({ message: 'Connection not found' });
+    const otherUserId = connCheck[0].user1_id === userId ? connCheck[0].user2_id : connCheck[0].user1_id;
+
+    const { v4: uuidv4 } = require('uuid');
+    const messageId = uuidv4();
+    const finalCreatedAt = req.body.createdAt || new Date().toISOString();
+    await pool.query(
+      `INSERT INTO connection_messages (id, connection_id, sender_id, message_type, content, media_url, created_at) VALUES (?, ?, ?, 'image', '[Image]', ?, ?)`,
+      [messageId, connectionId, userId, imageUrl, finalCreatedAt]
+    );
+    const msg = { id: messageId, sender_id: userId, content: '[Image]', message_type: 'image', media_url: imageUrl, created_at: finalCreatedAt, is_read: false };
+
+    if (req.app.io) {
+      req.app.io.to(`connection_${connectionId}`).emit('new_connection_message', { connectionId, message: { ...msg, created_at: msg.created_at } });
+    }
+    res.json({ messageId, message: { ...msg, created_at: msg.created_at } });
+  } catch (err) { next(err); }
 };
 
 // ─── Image Message Handling ─────────────────────────────────────────────────
@@ -425,21 +535,26 @@ exports.sendImageMessage = async (req, res, next) => {
 
     const otherUserId = matchCheck[0].user1_id === userId ? matchCheck[0].user2_id : matchCheck[0].user1_id;
 
-    // Upload to Cloudinary
-    const b64 = Buffer.from(req.file.buffer).toString('base64');
-    const dataURI = `data:${req.file.mimetype};base64,${b64}`;
-    
-    const result = await cloudinary.uploader.upload(dataURI, {
-      folder: 'campus-connect/chats',
-      transformation: [{ width: 1000, height: 1000, crop: 'limit' }]
+    // Upload to Cloudinary using stream for better reliability on large files
+    const result = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'campus-connect/chats',
+          transformation: [{ width: 1000, height: 1000, crop: 'limit' }]
+        },
+        (error, res) => {
+          if (error) reject(error);
+          else resolve(res);
+        }
+      );
+      uploadStream.end(req.file.buffer);
     });
 
-    const encryptedContent = encryptMessage('[Image]');
-    
+    const finalCreatedAt = req.body.createdAt || new Date().toISOString();
     const [dbResult] = await pool.query(
-      `INSERT INTO messages (match_id, sender_id, message_type, content, media_url, encrypted_payload)
-       VALUES (?, ?, 'image', ?, ?, ?)`,
-      [matchId, userId, encryptedContent, result.secure_url, encryptedContent]
+      `INSERT INTO messages (match_id, sender_id, message_type, content, media_url, created_at)
+       VALUES (?, ?, 'image', '[Image]', ?, ?)`,
+      [matchId, userId, result.secure_url, finalCreatedAt]
     );
 
     const messageId = dbResult.insertId;
@@ -452,25 +567,35 @@ exports.sendImageMessage = async (req, res, next) => {
     );
 
     // Emit socket event
-    const server = require('../server');
-    const io = server.io;
-    if (io) {
-      io.to(`match_${matchId}`).emit('new_message', {
+    if (req.app.io) {
+      req.app.io.to(`match_${matchId}`).emit('new_message', {
         matchId,
         message: {
           id: messageId,
           senderId: userId,
+          sender_id: userId,
           content: '[Image]',
           messageType: 'image',
-          imageUrl: result.secure_url,
-          createdAt: new Date()
+          message_type: 'image',
+          media_url: result.secure_url,
+          created_at: new Date().toISOString(),
+          is_read: false
         }
       });
     }
 
     res.status(201).json({
       messageId,
-      imageUrl: result.secure_url
+      imageUrl: result.secure_url,
+      message: {
+        id: messageId,
+        sender_id: userId,
+        content: '[Image]',
+        message_type: 'image',
+        media_url: result.secure_url,
+        created_at: new Date().toISOString(),
+        is_read: false
+      }
     });
   } catch (error) {
     next(error);
@@ -503,17 +628,17 @@ exports.sendSelfMessage = async (req, res, next) => {
   try {
     const userId = req.user.id;
     const { content } = req.body;
-    
+
     const encryptedContent = encryptMessage(content);
-    
+
     const [result] = await pool.query(
-      `INSERT INTO messages (sender_id, match_id, content, encrypted_payload, message_type, is_read) 
-       VALUES (?, 0, ?, ?, 'text', 1)`,
-      [userId, encryptedContent, encryptedContent]
+      `INSERT INTO messages (sender_id, match_id, content, message_type, is_read) 
+       VALUES (?, 0, ?, 'text', 1)`,
+      [userId, content]
     );
 
     const messageId = result.insertId;
-    
+
     // Emit for real-time (to self's personal room)
     if (req.app.io) {
       req.app.io.to(`user_${userId}`).emit('new_message', { matchId: 0, senderId: userId, messageId, isSelf: true });
@@ -530,26 +655,44 @@ exports.sendSelfImageMessage = async (req, res, next) => {
     if (!file) return res.status(400).json({ message: 'No file uploaded' });
 
     const cloudinary = require('../config/cloudinary');
-    // Upload from buffer
-    const b64 = Buffer.from(file.buffer).toString('base64');
-    const dataURI = `data:${file.mimetype};base64,${b64}`;
-    
-    const result = await cloudinary.uploader.upload(dataURI, { 
-      folder: 'campus-connect/chats',
-      transformation: [{ width: 1000, height: 1000, crop: 'limit' }]
+    // Upload using stream
+    const result = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'campus-connect/chats',
+          transformation: [{ width: 1000, height: 1000, crop: 'limit' }]
+        },
+        (error, res) => {
+          if (error) reject(error);
+          else resolve(res);
+        }
+      );
+      uploadStream.end(file.buffer);
     });
-    
-    const encryptedContent = encryptMessage('[Image]');
-    
+
     const [dbRes] = await pool.query(
-      `INSERT INTO messages (sender_id, match_id, content, encrypted_payload, message_type, media_url, is_read) 
-       VALUES (?, 0, ?, ?, 'image', ?, 1)`,
-      [userId, encryptedContent, encryptedContent, result.secure_url]
+      `INSERT INTO messages (sender_id, match_id, content, message_type, media_url, is_read) 
+       VALUES (?, 0, '[Image]', 'image', ?, 1)`,
+      [userId, result.secure_url]
     );
-    
+
     // Emit for real-time
     if (req.app.io) {
-      req.app.io.to(`user_${userId}`).emit('new_message', { matchId: 0, senderId: userId, messageId: dbRes.insertId, isSelf: true });
+      req.app.io.to(`user_${userId}`).emit('new_message', {
+        matchId: 0,
+        senderId: userId,
+        sender_id: userId,
+        messageId: dbRes.insertId,
+        isSelf: true,
+        message: {
+          id: dbRes.insertId,
+          sender_id: userId,
+          content: '[Image]',
+          message_type: 'image',
+          media_url: result.secure_url,
+          created_at: new Date().toISOString()
+        }
+      });
     }
 
     res.json({ success: true, messageId: dbRes.insertId, imageUrl: result.secure_url });
@@ -578,18 +721,24 @@ exports.sendConnectionImageMessage = async (req, res, next) => {
 
     const otherUserId = connCheck[0].user1_id === userId ? connCheck[0].user2_id : connCheck[0].user1_id;
 
-    // Upload to Cloudinary
-    const b64 = Buffer.from(req.file.buffer).toString('base64');
-    const dataURI = `data:${req.file.mimetype};base64,${b64}`;
-    
-    const result = await cloudinary.uploader.upload(dataURI, {
-      folder: 'campus-connect/chats',
-      transformation: [{ width: 1000, height: 1000, crop: 'limit' }]
+    // Upload using stream
+    const result = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'campus-connect/chats',
+          transformation: [{ width: 1000, height: 1000, crop: 'limit' }]
+        },
+        (error, res) => {
+          if (error) reject(error);
+          else resolve(res);
+        }
+      );
+      uploadStream.end(req.file.buffer);
     });
 
     const messageId = uuidv4();
     const encryptedContent = encryptMessage('[Image]');
-    
+
     await pool.query(
       `INSERT INTO connection_messages (id, connection_id, sender_id, message_type, content, media_url)
        VALUES (?, ?, ?, 'image', ?, ?)`,
@@ -597,10 +746,8 @@ exports.sendConnectionImageMessage = async (req, res, next) => {
     );
 
     // Emit socket event
-    const server = require('../server');
-    const io = server.io;
-    if (io) {
-      io.to(`connection_${connectionId}`).emit('new_connection_message', {
+    if (req.app.io) {
+      req.app.io.to(`connection_${connectionId}`).emit('new_connection_message', {
         connectionId,
         message: {
           id: messageId,
@@ -610,11 +757,13 @@ exports.sendConnectionImageMessage = async (req, res, next) => {
           messageType: 'image',
           message_type: 'image',
           media_url: result.secure_url,
-          created_at: new Date(),
+          created_at: new Date().toISOString(),
           is_read: false
         }
       });
-    }res.status(201).json({
+    }
+
+    res.status(201).json({
       messageId,
       imageUrl: result.secure_url
     });

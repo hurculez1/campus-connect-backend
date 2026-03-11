@@ -1,6 +1,7 @@
 # Environment variables (NEVER commit this)
 .env
 .env.local
+# .env.production is OK to commit for Vercel deployment
 .env.production
 
 # Dependencies

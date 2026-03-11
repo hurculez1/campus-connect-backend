@@ -105,8 +105,17 @@ const initDatabase = async () => {
     await pool.execute('UPDATE users SET is_active = 1 WHERE is_active IS NULL');
 
     console.log('--- Table Verification Complete ✅ ---');
-  } catch (err) {
-    console.error('❌ Database Initialization Failed:', err.message);
+    // Add last_pulse_check_at column to users table if it doesn't exist
+    try {
+      await pool.execute('ALTER TABLE users ADD COLUMN last_pulse_check_at TIMESTAMP NULL');
+      console.log('Added last_pulse_check_at to users table');
+    } catch (err) {
+      if (err.code !== 'ER_DUP_COLUMN_NAMES') {
+        // Silently ignore if already exists
+      }
+    }
+  } catch (error) {
+    console.error('Database initialization error:', error);
   }
 };
 

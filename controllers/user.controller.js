@@ -35,7 +35,7 @@ exports.updateProfile = async (req, res, next) => {
 
     const allowedFields = [
       'first_name', 'last_name', 'bio', 'pronouns', 'course', 'year_of_study',
-      'photos', 'interests', 'location_lat', 'location_lng', 'city',
+      'university', 'photos', 'interests', 'location_lat', 'location_lng', 'city',
       'preferred_age_min', 'preferred_age_max', 'preferred_gender',
       'preferred_distance_km', 'language_preference', 'show_me'
     ];
@@ -168,31 +168,25 @@ exports.uploadPhoto = async (req, res, next) => {
 exports.getPotentialMatches = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 30 } = req.query;
     const offset = (page - 1) * limit;
 
     // Get user preferences
     const [users] = await pool.query(
-      `SELECT preferred_age_min, preferred_age_max, preferred_gender, 
-              preferred_distance_km, university, location_lat, location_lng
+      `SELECT preferred_age_min, preferred_age_max, preferred_gender, university, interests
        FROM users WHERE id = ?`,
       [userId]
     );
-
     const user = users[0];
 
-    // Check swipe limits for free tier
+    // Check/reset swipe limits
     const [swipeCheck] = await pool.query(
-      `SELECT daily_swipes_used, daily_swipes_reset_at, subscription_tier
-       FROM users WHERE id = ?`,
+      `SELECT daily_swipes_used, daily_swipes_reset_at, subscription_tier FROM users WHERE id = ?`,
       [userId]
     );
-
     const swipeData = swipeCheck[0];
     const isFreeTier = swipeData.subscription_tier === 'free';
-
-    // Reset daily swipes if needed
-    const lastReset = new Date(swipeData.daily_swipes_reset_at);
+    const lastReset = new Date(swipeData.daily_swipes_reset_at || 0);
     const now = new Date();
     if (lastReset.getDate() !== now.getDate() || lastReset.getMonth() !== now.getMonth()) {
       await pool.query(
@@ -201,135 +195,63 @@ exports.getPotentialMatches = async (req, res, next) => {
       );
     }
 
-    // Get users already swiped
-    const [swipedUsers] = await pool.query(
-      'SELECT swiped_id FROM swipes WHERE swiper_id = ?',
-      [userId]
-    );
-    const swipedIds = swipedUsers.map(s => s.swiped_id);
-    swipedIds.push(userId); // Exclude self
-
-    let params = [];
-    let distanceSelect = '0 AS distance';
-
-    if (user.location_lat != null && user.location_lng != null) {
-      params.push(user.location_lat, user.location_lng, user.location_lat);
-      distanceSelect = `(6371 * acos(cos(radians(?)) * cos(radians(u.location_lat)) * cos(radians(u.location_lng) - radians(?)) + sin(radians(?)) * sin(radians(u.location_lat)))) AS distance`;
-    }
-
-    let excludeClause = 'TRUE';
-    if (swipedIds.length > 0) {
-      const placeholders = swipedIds.map(() => '?').join(',');
-      excludeClause = `u.id NOT IN (${placeholders})`;
-      params.push(...swipedIds);
-    }
-
+    // ─── Single Unified Query: Priority to unseen, then recycle everything else ───
+    // This removes the need for a separate fallback query and ensures a continuous loop.
     let query = `
       SELECT u.id, u.first_name, u.last_name, u.date_of_birth, u.gender,
              u.bio, u.university, u.course, u.year_of_study, u.profile_photo_url,
-             u.photos, u.interests, u.verification_status,
-             ${distanceSelect}
+             u.photos, u.interests, u.verification_status, u.subscription_tier,
+             0 AS distance,
+             CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS already_seen
       FROM users u
-      WHERE ${excludeClause}
+      LEFT JOIN swipes s ON s.swiper_id = ? AND s.swiped_id = u.id
+      WHERE u.id != ?
         AND u.is_active = TRUE
         AND u.is_banned = FALSE
         AND u.show_me = TRUE
     `;
+    let params = [userId, userId];
 
-    // Add preference filters
+    // Optional gender preference filter
     if (user.preferred_gender) {
-      const genders = typeof user.preferred_gender === 'string' ? JSON.parse(user.preferred_gender || '[]') : (user.preferred_gender || []);
-      if (genders.length > 0) {
-        const gPlaceholders = genders.map(() => '?').join(',');
-        query += ` AND u.gender IN (${gPlaceholders})`;
-        params.push(...genders);
-      }
+      try {
+        const genders = typeof user.preferred_gender === 'string'
+          ? JSON.parse(user.preferred_gender || '[]')
+          : (user.preferred_gender || []);
+        if (Array.isArray(genders) && genders.length > 0) {
+          const gPlaceholders = genders.map(() => '?').join(',');
+          query += ` AND u.gender IN (${gPlaceholders})`;
+          params.push(...genders);
+        }
+      } catch { }
     }
 
+    // Optional age filters
     if (user.preferred_age_min) {
       query += ` AND TIMESTAMPDIFF(YEAR, u.date_of_birth, CURDATE()) >= ?`;
       params.push(user.preferred_age_min);
     }
-
     if (user.preferred_age_max) {
       query += ` AND TIMESTAMPDIFF(YEAR, u.date_of_birth, CURDATE()) <= ?`;
       params.push(user.preferred_age_max);
     }
 
-    let havingClause = '';
-    if (user.preferred_distance_km && user.location_lat != null) {
-      havingClause = ` HAVING distance <= ?`;
-      params.push(user.preferred_distance_km);
-    }
-
-    query += havingClause;
-    
-    query += ` ORDER BY u.last_active DESC LIMIT ? OFFSET ?`;
+    // ORDER: Unseen people first, then newer people, then active people
+    query += ` ORDER BY already_seen ASC, u.created_at DESC, u.last_active DESC LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), parseInt(offset));
 
     let [potentialMatches] = await pool.query(query, params);
 
-    // FALLBACK LOGIC: If no NEW users, show previously swiped users (excluding matches/blocks)
-    if (potentialMatches.length === 0) {
-      // Re-run query without the excludeClause for swipedIds, 
-      // but still exclude matches and blocks (which are handled by u.id NOT IN matches/blocks if we had those tables, but here we just simplify)
-      // Actually, we should just show the swiped ones except those they LIKED already if we want "Discover" to feel fresh.
-      // But user said "even if one viewed them already".
-      let fallbackParams = [];
-      let fallbackQuery = `
-        SELECT u.id, u.first_name, u.last_name, u.date_of_birth, u.gender,
-               u.bio, u.university, u.course, u.year_of_study, u.profile_photo_url,
-               u.photos, u.interests, u.verification_status,
-               ${distanceSelect.replace(/\?/g, '??')} -- This is getting complex with params
-        FROM users u
-        WHERE u.id != ?
-          AND u.is_active = TRUE
-          AND u.is_banned = FALSE
-          AND u.show_me = TRUE
-          -- Exclude people already matched
-          AND u.id NOT IN (
-            SELECT CASE WHEN user1_id = ? THEN user2_id ELSE user1_id END
-            FROM matches WHERE user1_id = ? OR user2_id = ?
-          )
-      `;
-      // For simplicity, let's just use a more relaxed version of the original query
-      const [fallbackResults] = await pool.query(`
-        SELECT u.id, u.first_name, u.last_name, u.date_of_birth, u.gender,
-               u.bio, u.university, u.course, u.year_of_study, u.profile_photo_url,
-               u.photos, u.interests, u.verification_status
-        FROM users u
-        WHERE u.id != ? 
-          AND u.is_active = TRUE 
-          AND u.is_banned = FALSE
-          AND u.id NOT IN (
-            SELECT CASE WHEN user1_id = ? THEN user2_id ELSE user1_id END
-            FROM matches WHERE (user1_id = ? OR user2_id = ?) AND is_active = TRUE
-          )
-        ORDER BY RAND()
-        LIMIT ?
-      `, [userId, userId, userId, userId, parseInt(limit)]);
-      potentialMatches = fallbackResults;
-    }
-
-    // Compatibility Scoring
-    const userInterests = user.interests ? (typeof user.interests === 'string' ? JSON.parse(user.interests) : user.interests) : [];
+    // Compatibility score
+    let userInterests = [];
+    try { userInterests = typeof user.interests === 'string' ? JSON.parse(user.interests) : (user.interests || []); } catch { }
 
     const matchesWithScores = potentialMatches.map(m => {
-      const matchInterests = m.interests ? (typeof m.interests === 'string' ? JSON.parse(m.interests) : m.interests) : [];
-      const sharedInterests = userInterests.filter(interest => matchInterests.includes(interest));
-
-      let score = 50;
-      if (userInterests.length > 0) {
-        score = (sharedInterests.length / userInterests.length) * 60 + 20;
-      }
-
-      if (m.university === user.university) score += 10;
-      // Removed fake extra randomness
-
-      return {
-        ...m,
-        compatibility: Math.min(Math.round(score), 99)
-      };
+      let mInterests = [];
+      try { mInterests = typeof m.interests === 'string' ? JSON.parse(m.interests) : (m.interests || []); } catch { }
+      const shared = userInterests.filter(i => mInterests.includes(i));
+      const score = userInterests.length > 0 ? Math.round((shared.length / userInterests.length) * 60 + 20) : 70;
+      return { ...m, compatibility: Math.min(score, 99) };
     });
 
     res.json({
@@ -383,10 +305,20 @@ exports.updateSettings = async (req, res, next) => {
   }
 };
 
+exports.markPulseSeen = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    await pool.query('UPDATE users SET last_pulse_check_at = NOW() WHERE id = ?', [userId]);
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.getNotificationCount = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    
+
     // Unread messages from matches
     const [msgCount] = await pool.query(
       'SELECT COUNT(*) as count FROM messages m JOIN matches ma ON m.match_id = ma.id WHERE (ma.user1_id = ? OR ma.user2_id = ?) AND ma.is_active = TRUE AND m.sender_id != ? AND m.is_read = FALSE',
@@ -399,12 +331,13 @@ exports.getNotificationCount = async (req, res, next) => {
       [userId, userId, userId]
     );
 
-    // New likes (simplified to avoid schema errors)
+    // New likes (people who liked me but I haven't liked back AND since last check)
     const [likesCount] = await pool.query(
       `SELECT COUNT(*) as count FROM swipes 
        WHERE swiped_id = ? AND direction = 'like'
-       AND swiper_id NOT IN (SELECT swiped_id FROM swipes WHERE swiper_id = ?)`,
-      [userId, userId]
+       AND swiper_id NOT IN (SELECT swiped_id FROM swipes WHERE swiper_id = ?)
+       AND created_at > (SELECT COALESCE(last_likes_check_at, '1970-01-01 00:00:00') FROM users WHERE id = ?)`,
+      [userId, userId, userId]
     );
 
     // Pending match requests (received)
@@ -414,18 +347,28 @@ exports.getNotificationCount = async (req, res, next) => {
         'SELECT COUNT(*) as count FROM match_requests WHERE to_user_id = ? AND status = "pending"',
         [userId]
       );
-    } catch(e) {
-      // Ignore if match_requests table schema mismatch
-    }
+    } catch(e) {}
+
+    // Unseen pulse posts (posts created after user's last pulse check)
+    let pulseCount = [{ count: 0 }];
+    try {
+      [pulseCount] = await pool.query(
+        `SELECT COUNT(*) as count FROM posts 
+         WHERE user_id != ? 
+         AND created_at > (SELECT COALESCE(last_pulse_check_at, created_at) FROM users WHERE id = ?)`,
+        [userId, userId]
+      );
+    } catch(e) {}
 
     const totalMessages = msgCount[0].count + connMsgCount[0].count;
     const totalRequests = reqCount[0].count;
-    
+
     res.json({
       total: totalMessages + likesCount[0].count + totalRequests,
       messages: totalMessages,
       likes: likesCount[0].count,
-      requests: totalRequests
+      requests: totalRequests,
+      pulse: pulseCount[0].count  // Unseen vibes on Pulse
     });
   } catch (error) {
     next(error);

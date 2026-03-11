@@ -1,5 +1,19 @@
 const { pool } = require('../config/database');
 const logger = require('../utils/logger');
+const CryptoJS = require('crypto-js');
+
+const ENCRYPTION_KEY = process.env.MESSAGE_ENCRYPTION_KEY || 'default-key-32-chars-long!!!!!';
+
+const decryptMessage = (ciphertext) => {
+  if (!ciphertext) return null;
+  try {
+    const bytes = CryptoJS.AES.decrypt(ciphertext, ENCRYPTION_KEY);
+    const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+    return decrypted || ciphertext;
+  } catch (e) {
+    return ciphertext;
+  }
+};
 
 // Create a pending match request (Match Now)
 exports.createMatchRequest = async (req, res, next) => {
@@ -57,9 +71,8 @@ exports.createMatchRequest = async (req, res, next) => {
     );
 
     // Emit socket event to target user
-    const { io } = require('../server');
-    if (io) {
-      io.to(`user_${targetUserId}`).emit('match_request', {
+    if (req.app.io) {
+      req.app.io.to(`user_${targetUserId}`).emit('match_request', {
         requestId,
         fromUserId: userId,
         fromUserName: fromUser[0]?.first_name,
@@ -186,7 +199,7 @@ exports.getPendingRequests = async (req, res, next) => {
 
     // Get requests sent to me
     const [received] = await pool.query(
-      `SELECT mr.*, u.first_name, u.last_name, u.profile_photo_url, u.university, u.course
+      `SELECT mr.*, u.id, u.id as userId, u.first_name, u.last_name, u.profile_photo_url, u.university, u.course
        FROM match_requests mr
        JOIN users u ON u.id = mr.from_user_id
        WHERE mr.to_user_id = ? AND mr.status = 'pending'
@@ -196,13 +209,17 @@ exports.getPendingRequests = async (req, res, next) => {
 
     // Get requests I sent
     const [sent] = await pool.query(
-      `SELECT mr.*, u.first_name, u.last_name, u.profile_photo_url, u.university, u.course
+      `SELECT mr.*, u.id, u.id as userId, u.first_name, u.last_name, u.profile_photo_url, u.university, u.course
        FROM match_requests mr
        JOIN users u ON u.id = mr.to_user_id
        WHERE mr.from_user_id = ? AND mr.status = 'pending'
        ORDER BY mr.created_at DESC`,
       [userId]
     );
+
+    [...received, ...sent].forEach(r => {
+        if (r.created_at) r.created_at = new Date(r.created_at).toISOString();
+    });
 
     res.json({ 
       received: received,
@@ -263,10 +280,9 @@ exports.createDirectMatch = async (req, res, next) => {
       [targetUserId, JSON.stringify({ matchUserId: userId, matchId })]
     );
 
-    // Emit socket event to target user
-    const { io } = require('../server');
-    if (io) {
-      io.to(`user_${targetUserId}`).emit('new_match', {
+    // Emit socket event to target user using req.app.io (not circular require)
+    if (req.app.io) {
+      req.app.io.to(`user_${targetUserId}`).emit('new_match', {
         userId: userId,
         matchId: matchId,
         message: 'Someone wants to chat with you!'
@@ -382,18 +398,18 @@ exports.swipe = async (req, res, next) => {
 
     // If match, create match record
     if (isMatch) {
-      const [reverseSwipe] = await pool.query(
+      const [reverseSwipes] = await pool.query(
         'SELECT id FROM swipes WHERE swiper_id = ? AND swiped_id = ?',
         [targetUserId, userId]
       );
 
       const user1Id = userId < targetUserId ? userId : targetUserId;
       const user2Id = userId < targetUserId ? targetUserId : userId;
-      const swipe1Id = userId < targetUserId ? swipeId : reverseSwipe.insertId;
-      const swipe2Id = userId < targetUserId ? reverseSwipe.insertId : swipeId;
+      const swipe1Id = userId < targetUserId ? swipeId : (reverseSwipes[0]?.id || null);
+      const swipe2Id = userId < targetUserId ? (reverseSwipes[0]?.id || null) : swipeId;
 
       await pool.query(
-        'INSERT INTO matches (user1_id, user2_id, swipe1_id, swipe2_id) VALUES (?, ?, ?, ?)',
+        'INSERT IGNORE INTO matches (user1_id, user2_id, swipe1_id, swipe2_id) VALUES (?, ?, ?, ?)',
         [user1Id, user2Id, swipe1Id, swipe2Id]
       );
 
@@ -404,11 +420,18 @@ exports.swipe = async (req, res, next) => {
         [targetUserId, JSON.stringify({ matchUserId: userId })],
       );
 
-      // Emit socket event
+      // Emit socket event to BOTH users
       if (req.app.io) {
+        // To target
         req.app.io.to(`user_${targetUserId}`).emit('new_match', {
           userId: userId,
+          matchId: user1Id < user2Id ? user1Id : user2Id, // Fallback placeholder if id fetch below fails
           message: 'You have a new match!'
+        });
+        // To self
+        req.app.io.to(`user_${userId}`).emit('new_match', {
+          userId: targetUserId,
+          message: 'It\'s a match!'
         });
       }
     } else if (direction === 'like') {
@@ -422,13 +445,23 @@ exports.swipe = async (req, res, next) => {
     }
 
       logger.info(`New match created: ${userId} <-> ${targetUserId}`);
- 
+
       // Emit global event for admin dashboard
       try {
         if (req.app.io) {
-          req.app.io.emit('new_match', { userId, targetUserId });
+          req.app.io.emit('stats_update', { type: 'new_match' });
         }
       } catch (e) {}
+
+      // Get the actual match ID for the response
+      let createdMatchId = null;
+      try {
+        const [matchRow] = await pool.query(
+          'SELECT id FROM matches WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?) LIMIT 1',
+          [userId, targetUserId, targetUserId, userId]
+        );
+        createdMatchId = matchRow[0]?.id || null;
+      } catch(e) {}
 
       res.json({
         success: true,
@@ -436,6 +469,7 @@ exports.swipe = async (req, res, next) => {
         direction,
         matchedUser: isMatch ? {
           id: targetUserId,
+          matchId: createdMatchId,
           firstName: (await pool.query('SELECT first_name FROM users WHERE id = ?', [targetUserId]))[0][0]?.first_name || 'User'
         } : null
       });
@@ -471,8 +505,18 @@ exports.getMatches = async (req, res, next) => {
       [userId, userId, userId, userId, userId, parseInt(limit), parseInt(offset)]
     );
 
-    // Parse interests for each match
+    // Parse and decrypt
     const parsedMatches = matches.map(m => {
+      // Decrypt last_message
+      if (m.last_message && m.last_message !== '[Image]') {
+        m.last_message = decryptMessage(m.last_message);
+      }
+
+      // Ensure ISO dates
+      if (m.matched_at) m.matched_at = new Date(m.matched_at).toISOString();
+      if (m.last_message_at) m.last_message_at = new Date(m.last_message_at).toISOString();
+      if (m.last_active) m.last_active = new Date(m.last_active).toISOString();
+
       if (m.interests && typeof m.interests === 'string') {
         try {
           m.interests = JSON.parse(m.interests);
@@ -480,6 +524,8 @@ exports.getMatches = async (req, res, next) => {
           m.interests = [];
         }
       }
+      m.id = m.other_user_id;
+      m.userId = m.other_user_id;
       return m;
     });
 
@@ -523,7 +569,8 @@ exports.unmatch = async (req, res, next) => {
 
 exports.markLikesAsSeen = async (req, res, next) => {
   try {
-    // Disabled safely, last_checked_likes column not in schema
+    const userId = req.user.id;
+    await pool.query('UPDATE users SET last_likes_check_at = NOW() WHERE id = ?', [userId]);
     res.json({ success: true });
   } catch (error) {
     next(error);
@@ -533,40 +580,37 @@ exports.markLikesAsSeen = async (req, res, next) => {
 exports.getWhoLikedMe = async (req, res, next) => {
   try {
     const userId = req.user.id;
+    const isFree = req.user.subscription_tier === 'free';
 
-    // Premium/VIP feature
-    if (req.user.subscription_tier === 'free') {
-      const [count] = await pool.query(
-        `SELECT COUNT(*) as count FROM swipes 
-         WHERE swiped_id = ? AND direction = 'like' 
-         AND swiper_id NOT IN (
-           SELECT swiped_id FROM swipes WHERE swiper_id = ?
-         )`,
-        [userId, userId]
-      );
+    // Get last check time
+    const [user] = await pool.query('SELECT last_likes_check_at FROM users WHERE id = ?', [userId]);
+    const lastCheck = user[0]?.last_likes_check_at || '1970-01-01 00:00:00';
 
-      return res.json({
-        count: count[0].count,
-        blurred: true,
-        message: 'Upgrade to Premium to see who liked you'
-      });
-    }
-
+    // Fetch all likers
     const [likers] = await pool.query(
-      `SELECT u.id, u.first_name, u.profile_photo_url, u.university,
+      `SELECT u.id, u.id as userId, u.first_name, u.profile_photo_url, u.university, u.bio, u.course, u.year_of_study, u.interests,
               s.created_at as liked_at,
-              1 as is_new
+              CASE WHEN s.created_at > ? THEN 1 ELSE 0 END as is_new
        FROM swipes s
        JOIN users u ON s.swiper_id = u.id
        WHERE s.swiped_id = ? AND s.direction = 'like'
-       AND s.swiper_id NOT IN (
-         SELECT swiped_id FROM swipes WHERE swiper_id = ?
-       )`,
-      [userId, userId]
+       ORDER BY s.created_at DESC`,
+      [lastCheck, userId]
     );
 
-    const newCount = likers.filter(l => l.is_new).length;
-    res.json({ users: likers, count: likers.length, newCount });
+    likers.forEach(l => {
+        if (l.liked_at) l.liked_at = new Date(l.liked_at).toISOString();
+    });
+
+    // Calculate count of NEW likes (specifically for the badge)
+    const newLikes = likers.filter(l => l.is_new).length;
+
+    res.json({
+      users: likers,
+      count: likers.length,
+      newCount: newLikes,
+      blurred: isFree
+    });
   } catch (error) {
     next(error);
   }
@@ -607,7 +651,23 @@ exports.getMatchById = async (req, res, next) => {
       }
     }
 
-    res.json({ match });
+    match.id = match.other_user_id;
+    match.userId = match.other_user_id;
+
+    res.json(match);
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getLikedUserIds = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const [likes] = await pool.query(
+      "SELECT swiped_id FROM swipes WHERE swiper_id = ? AND direction IN ('like', 'super_like')",
+      [userId]
+    );
+    res.json({ ids: likes.map(l => l.swiped_id) });
   } catch (error) {
     next(error);
   }

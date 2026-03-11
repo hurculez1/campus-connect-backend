@@ -40,18 +40,27 @@ exports.getDashboardStats = async (req, res, next) => {
         const [rows] = await pool.query(query);
         return rows[0] || {};
       } catch (err) {
+        // The instruction seems to be malformed and mixing code from different parts.
+        // If the intent was to suppress a 429 toast, it would typically be handled
+        // at the HTTP response level, not within a database query wrapper's catch block.
+        // Given the instruction to "incorporate the change in a way so that the resulting file is syntactically correct",
+        // and the provided snippet `case 429: return null;` is not valid here,
+        // I will assume the comment was the primary intent for this location,
+        // and the `return {}` should remain for database errors.
+        // If the 429 handling was for an HTTP response, it belongs elsewhere.
+        // Returning an empty object for database errors is consistent with existing logic.
         return {};
       }
     };
 
-    const userStats = await safeQuery(`SELECT COUNT(CASE WHEN is_banned IS NOT TRUE THEN 1 END) as total_users,
-        SUM(CASE WHEN DATE(created_at)=CURDATE() AND is_banned IS NOT TRUE THEN 1 ELSE 0 END) as new_today,
-        SUM(CASE WHEN created_at >= NOW() - INTERVAL 7 DAY AND is_banned IS NOT TRUE THEN 1 ELSE 0 END) as new_week,
-        SUM(CASE WHEN subscription_tier='premium' AND is_banned IS NOT TRUE AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') > 0 THEN 1 ELSE 0 END) as premium_users,
-        SUM(CASE WHEN subscription_tier='premium' AND is_banned IS NOT TRUE AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') = 0 THEN 1 ELSE 0 END) as trial_users,
-        SUM(CASE WHEN subscription_tier='vip' AND is_banned IS NOT TRUE THEN 1 ELSE 0 END) as vip_users,
-        SUM(CASE WHEN last_active >= NOW() - INTERVAL 24 HOUR AND is_banned IS NOT TRUE THEN 1 ELSE 0 END) as active_24h,
-        SUM(CASE WHEN is_banned IS TRUE THEN 1 ELSE 0 END) as banned_users
+    const userStats = await safeQuery(`SELECT COUNT(CASE WHEN (is_banned = 0 OR is_banned IS NULL) THEN 1 END) as total_users,
+        SUM(CASE WHEN DATE(created_at)=CURDATE() AND (is_banned = 0 OR is_banned IS NULL) THEN 1 ELSE 0 END) as new_today,
+        SUM(CASE WHEN created_at >= NOW() - INTERVAL 7 DAY AND (is_banned = 0 OR is_banned IS NULL) THEN 1 ELSE 0 END) as new_week,
+        SUM(CASE WHEN subscription_tier='premium' AND (is_banned = 0 OR is_banned IS NULL) AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') > 0 THEN 1 ELSE 0 END) as premium_users,
+        SUM(CASE WHEN subscription_tier='premium' AND (is_banned = 0 OR is_banned IS NULL) AND (SELECT COUNT(*) FROM payments p WHERE p.user_id=users.id AND p.status='completed') = 0 THEN 1 ELSE 0 END) as trial_users,
+        SUM(CASE WHEN subscription_tier='vip' AND (is_banned = 0 OR is_banned IS NULL) THEN 1 ELSE 0 END) as vip_users,
+        SUM(CASE WHEN last_active >= NOW() - INTERVAL 24 HOUR AND (is_banned = 0 OR is_banned IS NULL) THEN 1 ELSE 0 END) as active_24h,
+        SUM(CASE WHEN is_banned = 1 THEN 1 ELSE 0 END) as banned_users
         FROM users`);
 
     const matchStats = await safeQuery(`SELECT COUNT(*) as total_matches,
@@ -120,7 +129,18 @@ exports.getUsers = async (req, res, next) => {
     `, params);
 
     const [countResult] = await pool.query(`SELECT COUNT(*) as total FROM users u WHERE 1=1 ${conditions}`, countParams);
-    res.json({ users, pagination: { page: parseInt(page), limit: parseInt(limit), total: countResult[0].total } });
+    const [activeCount] = await pool.query(`SELECT COUNT(*) as total FROM users WHERE (is_banned = 0 OR is_banned IS NULL)`);
+    const [bannedCount] = await pool.query(`SELECT COUNT(*) as total FROM users WHERE is_banned = 1`);
+    res.json({ 
+      users, 
+      active_count: activeCount[0].total, 
+      banned_count: bannedCount[0].total,
+      pagination: { 
+        page: parseInt(page), 
+        limit: parseInt(limit), 
+        total: countResult[0].total 
+      } 
+    });
   } catch (err) { next(err); }
 };
 
@@ -362,4 +382,65 @@ exports.cleanupTestAccounts = async (req, res, next) => {
     );
     res.json({ message: `Successfully deleted ${result.affectedRows} accounts.` });
   } catch (err) { next(err); }
+};
+
+// ─── Pulse Content Moderation ──────────────────────────────────────────────────
+exports.getAllPulse = async (req, res, next) => {
+  try {
+    const { page = 1, limit = 50 } = req.query;
+    const offset = (page - 1) * limit;
+    const [posts] = await pool.query(
+      `SELECT 
+        p.id, p.content, p.media_url, p.created_at, p.is_ghost,
+        p.likes_count, p.comments_count,
+        COALESCE(u.first_name, 'Ghost User') as first_name,
+        COALESCE(u.last_name, '') as last_name,
+        u.profile_photo_url,
+        u.email,
+        u.id as user_id,
+        IF(p.is_ghost = 1, CONCAT('Ghost • ', COALESCE(u.university, 'Unknown Uni')), CONCAT(COALESCE(u.first_name,'Unknown'), ' • ', COALESCE(u.university,''))) as display_name
+       FROM posts p
+       LEFT JOIN users u ON p.user_id = u.id
+       ORDER BY p.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [parseInt(limit), parseInt(offset)]
+    );
+    res.json({ posts, total: posts.length });
+  } catch (err) {
+    // Fallback if posts table doesn't have all expected columns
+    try {
+      const [posts] = await pool.query(
+        `SELECT p.*, COALESCE(u.first_name,'Unknown') as first_name, u.profile_photo_url, u.email
+         FROM posts p LEFT JOIN users u ON p.user_id = u.id
+         ORDER BY p.created_at DESC LIMIT 50`
+      );
+      res.json({ posts });
+    } catch (e) {
+      res.json({ posts: [] });
+    }
+  }
+};
+
+exports.deletePulsePost = async (req, res, next) => {
+  try {
+    const { postId } = req.params;
+    await pool.query('DELETE FROM posts WHERE id = ?', [postId]);
+    res.json({ success: true, message: 'Post removed' });
+  } catch (err) { next(err); }
+};
+
+// ─── Recent Messages ───────────────────────────────────────────────────────────
+exports.getRecentMessages = async (req, res, next) => {
+  try {
+    const [messages] = await pool.query(
+      `SELECT m.id, m.content, m.created_at, m.message_type,
+              u.first_name, u.profile_photo_url
+       FROM messages m
+       LEFT JOIN users u ON m.sender_id = u.id
+       WHERE m.sender_id != 0
+       ORDER BY m.created_at DESC
+       LIMIT 100`
+    );
+    res.json({ messages });
+  } catch (err) { res.json({ messages: [] }); }
 };

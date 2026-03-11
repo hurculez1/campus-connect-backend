@@ -1,6 +1,15 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const cors = require('cors');
+const helmet = require('helmet');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
+
+// Load environment variables FIRST — before anything else
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 // Global error handlers
 process.on('uncaughtException', (err) => {
@@ -10,13 +19,6 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
   console.error(new Date().toISOString() + ' REJECTION: ' + String(reason) + '\n');
 });
-const cors = require('cors');
-const helmet = require('helmet');
-const compression = require('compression');
-const rateLimit = require('express-rate-limit');
-const { createServer } = require('http');
-const { Server } = require('socket.io');
-require('dotenv').config();
 
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
@@ -30,6 +32,15 @@ const { socketAuth } = require('./middleware/auth.middleware');
 const socketHandler = require('./services/socket.service');
 const { errorHandler } = require('./middleware/error.middleware');
 const logger = require('./utils/logger');
+
+// ─── CORS Origins must be defined BEFORE creating Socket.IO server ───────────
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "https://frontend-hurculez1s-projects.vercel.app",
+  "https://frontend-7q5a6gvbv-hurculez1s-projects.vercel.app",
+  "https://frontend-c8eacgjry-hurculez1s-projects.vercel.app",
+  "http://localhost:3000"
+].filter(Boolean);
 
 const app = express();
 const httpServer = createServer(app);
@@ -58,13 +69,6 @@ app.use(helmet({
   },
 }));
 
-const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  "https://frontend-hurculez1s-projects.vercel.app",
-  "https://frontend-iota-azure-90.vercel.app",
-  "http://localhost:3000"
-].filter(Boolean);
-
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl)
@@ -81,10 +85,6 @@ app.use(cors({
 }));
 
 app.use(compression());
-
-// Rate limiting removed as requested to prevent false positives and improve user experience
-// const limiter = rateLimit({ ... });
-// app.use('/api/', limiter);
 
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
@@ -113,7 +113,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/universities', universityRoutes);
 app.use('/api/pulse', pulseRoutes);
 
-// Root route for cPanel health check
+// Root route for health check
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.send('<html><body><h1>Campus Connect API is Online</h1></body></html>');
@@ -124,18 +124,16 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Temporary DB diagnostic — remove after debugging
+// DB diagnostic endpoint — check database connection
 app.get('/api/db-test', async (req, res) => {
   try {
     const { pool } = require('./config/database');
-    const { initDatabase } = require('./config/db-init');
-    await initDatabase(); // Run init manually if needed
     const [rows] = await pool.execute('SELECT 1 + 1 AS result');
     const [userCount] = await pool.query('SELECT COUNT(*) as count FROM users');
     res.json({
       db: 'connected ✅',
       host: process.env.DB_HOST,
-      status: 'Tables synchronized',
+      dbName: process.env.DB_NAME,
       usersInDb: userCount[0].count,
       result: rows[0].result
     });
@@ -148,13 +146,11 @@ app.get('/api/db-test', async (req, res) => {
   }
 });
 
-// Auto-init on startup (resilient) - ONLY run in non-production or if explictly told
+// Auto-init DB schema on startup
 const { initDatabase } = require('./config/db-init');
-if (process.env.NODE_ENV !== 'production' || process.env.INIT_DB) {
-  initDatabase().catch(err => {
-    console.error('Database auto-init failed:', err.message);
-  });
-}
+initDatabase().catch(err => {
+  console.error('Database auto-init failed:', err.message);
+});
 
 // Socket.io authentication and handling
 io.use(socketAuth);
