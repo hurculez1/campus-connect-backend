@@ -20,6 +20,7 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 router.get('/profile', authenticate, userController.getProfile);
+router.get('/:id/profile', authenticate, userController.getUserProfile);
 router.put('/profile', authenticate, userController.updateProfile);
 router.post('/photos', authenticate, upload.single('photo'), userController.uploadPhoto);
 router.get('/discover', authenticate, userController.getPotentialMatches);

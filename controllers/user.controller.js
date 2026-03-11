@@ -28,6 +28,30 @@ exports.getProfile = async (req, res, next) => {
   }
 };
 
+exports.getUserProfile = async (req, res, next) => {
+  try {
+    const userId = req.params.id;
+
+    const [users] = await pool.query(
+      `SELECT id, first_name, last_name, date_of_birth, gender, pronouns,
+              bio, university, course, year_of_study, profile_photo_url, photos,
+              interests, subscription_tier, verification_status, created_at,
+              (SELECT COUNT(*) FROM matches WHERE user1_id=id OR user2_id=id) as match_count
+       FROM users
+       WHERE id = ?`,
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({ user: users[0] });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.updateProfile = async (req, res, next) => {
   try {
     const userId = req.user.id;
